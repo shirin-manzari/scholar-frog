@@ -1,1 +1,6 @@
-
+pymupdf
+sentence-transformers
+chromadb
+requests
+python-dotenv
+rich

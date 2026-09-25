@@ -1,1 +1,8 @@
-
+chroma_db/
+papers/*.pdf
+!papers/.gitkeep
+.env
+__pycache__/
+*.pyc
+.venv/
+venv/
