@@ -33,16 +33,38 @@ def get_embedding_model():
 
 
 def extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
-    """Returns [(page_number, text), ...], 1-indexed pages."""
-    pages = []
+    """Returns [(page_number, markdown), ...], 1-indexed pages.
+
+    If Markdown conversion fails or produces no usable page text, retain the
+    plain-text extraction path so a conversion issue does not drop a PDF.
+    """
     import pymupdf
 
     with pymupdf.open(pdf_path) as doc:
-        for i, page in enumerate(doc):
-            text = page.get_text("text")
-            if text.strip():
-                pages.append((i + 1, text))
-    return pages
+        try:
+            import pymupdf4llm
+
+            converted = pymupdf4llm.to_markdown(doc, page_chunks=True)
+            pages = []
+            for i, page_chunk in enumerate(converted or []):
+                text = page_chunk.get("text", "") if isinstance(page_chunk, dict) else ""
+                metadata = page_chunk.get("metadata", {}) if isinstance(page_chunk, dict) else {}
+                page_number = metadata.get("page", i) + 1
+                if text.strip():
+                    pages.append((page_number, text))
+            if pages:
+                console.print(f"  [dim]Extraction: Markdown ({len(pages)} pages)[/dim]")
+                return pages
+            raise ValueError("Markdown conversion returned no usable page text")
+        except Exception as exc:
+            console.print(f"  [yellow]Markdown extraction failed ({exc}); using plain-text fallback.[/yellow]")
+            pages = []
+            for i, page in enumerate(doc):
+                text = page.get_text("text")
+                if text.strip():
+                    pages.append((i + 1, text))
+            console.print(f"  [dim]Extraction: plain-text fallback ({len(pages)} pages)[/dim]")
+            return pages
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
