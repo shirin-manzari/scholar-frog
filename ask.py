@@ -33,10 +33,21 @@ def main():
                          help="Just ingest the papers folder, don't ask anything")
     parser.add_argument("--reingest", action="store_true",
                          help="Reprocess all PDFs, including unchanged files")
+    parser.add_argument("--citation-retries", type=int,
+                        default=int(__import__("os").getenv("CITATION_MAX_RETRIES", "1")),
+                        help="Maximum citation repair generations (default: 1)")
+    parser.add_argument("--no-citation-validation", action="store_true",
+                        help="Disable citation reference validation")
+    parser.add_argument("--no-citation-coverage", action="store_true",
+                        help="Disable conservative uncited sentence warnings")
+    parser.add_argument("--debug-citations", action="store_true",
+                        help="Show evidence mapping, validation details, and original response")
     args = parser.parse_args()
 
     if args.top_k <= 0:
         parser.error("--top-k must be greater than zero")
+    if args.citation_retries < 0:
+        parser.error("--citation-retries must be non-negative")
 
     if not args.ingest_only and not args.question:
         parser.error('a question is required unless --ingest-only is set')
@@ -89,20 +100,32 @@ def main():
 
     try:
         with console.status("[bold cyan]Generating grounded answer...[/bold cyan]"):
-            answer = generate_answer(args.question, chunks)
+            result = generate_answer(args.question, chunks, max_retries=args.citation_retries,
+                                     coverage_enabled=not args.no_citation_coverage,
+                                     validation_enabled=not args.no_citation_validation)
     except (RuntimeError, ImportError, ValueError) as exc:
         console.print(f"[red]Generation failed:[/red] {exc}")
         return 1
 
-    console.print(Panel(Markdown(answer), title="Answer", border_style="green"))
-
-    console.print("\n[bold]Retrieved sources:[/bold]")
-    seen = set()
-    for c in chunks:
-        key = (c["source"], c["page"])
-        if key not in seen:
-            seen.add(key)
-            console.print(f"  • {c['title']} — p.{c['page']}  [dim]({c['source']})[/dim]")
+    console.print(Panel(Markdown(result.answer), title="Answer", border_style="green"))
+    if result.validation.references_valid:
+        console.print("\n[bold]References:[/bold]")
+        for item in result.validation.valid_evidence:
+            console.print(f"  [{item.evidence_id}] {item.reference}")
+    if result.validation.coverage_warnings:
+        console.print("\n[yellow]Possible uncited factual sentences (heuristic):[/yellow]")
+        for sentence in result.validation.coverage_warnings:
+            console.print(f"  • {sentence}")
+    if args.debug_citations:
+        console.print("\n[bold]Citation validation:[/bold] " + ("valid references; semantic support not checked" if result.validation.references_valid else "FAILED"))
+        console.print(f"Regeneration attempts: {result.regeneration_attempts}")
+        for error in result.error_messages:
+            console.print(f"  [red]{error}[/red]")
+        for item in result.evidence:
+            console.print(f"  [{item.evidence_id}] chunk={item.chunk_id} {item.reference}")
+        if not result.validation.references_valid:
+            console.print("Original generated response:")
+            console.print(result.original_answer)
 
 
 if __name__ == "__main__":
