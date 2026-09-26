@@ -40,12 +40,14 @@ python ask.py --ingest-only
 python ask.py "What methods do the papers use?"
 python ask.py --papers ./my-pdfs --top-k 8 "What are the main findings?"
 python ask.py --no-ingest "How does paper A define the term?"
+python ask.py --ingest-only --reingest
 ```
 
 Ingestion is content-hash based: unchanged PDFs are skipped, and changed files
 replace their prior chunks in the local database. `--no-ingest` skips the
 folder check, so run ingestion after adding or changing papers. The database is
-stored in `chroma_db/`.
+stored in `chroma_db/`. Use `--reingest` after changing extraction or chunking
+logic to rebuild chunks for PDFs that were already indexed.
 
 ## Configuration
 

@@ -5,7 +5,7 @@ from rich.markdown import Markdown
 from rich.panel import Panel
 
 from src.generate import generate_answer
-from src.ingest import ingest_folder
+from src.ingest import ingest_folder, reingest_folder
 from src.retrieve import retrieve
 
 console = Console()
@@ -20,6 +20,8 @@ def main():
                          help="Skip the (fast, idempotent) ingestion check before querying")
     parser.add_argument("--ingest-only", action="store_true",
                          help="Just ingest the papers folder, don't ask anything")
+    parser.add_argument("--reingest", action="store_true",
+                         help="Reprocess all PDFs, including unchanged files")
     args = parser.parse_args()
 
     if args.top_k <= 0:
@@ -27,10 +29,15 @@ def main():
 
     if not args.ingest_only and not args.question:
         parser.error('a question is required unless --ingest-only is set')
+    if args.reingest and args.no_ingest:
+        parser.error("--reingest cannot be used with --no-ingest")
 
-    if not args.no_ingest or args.ingest_only:
+    if not args.no_ingest or args.ingest_only or args.reingest:
         console.print("[bold]Checking for new papers to ingest...[/bold]")
-        ingest_folder(args.papers)
+        if args.reingest:
+            reingest_folder(args.papers)
+        else:
+            ingest_folder(args.papers)
 
     if args.ingest_only:
         return

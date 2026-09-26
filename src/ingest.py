@@ -154,6 +154,15 @@ def get_collection():
 
 
 def ingest_folder(papers_dir: str = "papers"):
+    _ingest_folder(papers_dir, force=False)
+
+
+def reingest_folder(papers_dir: str = "papers"):
+    """Reprocess every PDF, even if its content hash is already in Chroma."""
+    _ingest_folder(papers_dir, force=True)
+
+
+def _ingest_folder(papers_dir: str, force: bool):
     papers_path = Path(papers_dir)
     if not papers_path.exists():
         console.print(f"[red]Folder not found:[/red] {papers_dir}")
@@ -179,7 +188,7 @@ def ingest_folder(papers_dir: str = "papers"):
 
     for pdf_path in pdfs:
         h = file_hash(pdf_path)
-        if h in existing_hashes:
+        if h in existing_hashes and not force:
             console.print(f"[dim]Skipping (already ingested): {pdf_path.name}[/dim]")
             continue
 
