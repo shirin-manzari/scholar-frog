@@ -11,6 +11,8 @@ CHUNK_SIZE = 800
 CHUNK_OVERLAP = 150
 DB_DIR = "chroma_db"
 COLLECTION_NAME = "papers"
+MANIFEST_NAME = "documents.json"
+INDEX_VERSION = f"{EMBED_MODEL_NAME}:chunks-{CHUNK_SIZE}-{CHUNK_OVERLAP}:v1"
 _embedding_model = None
 
 
@@ -20,7 +22,7 @@ def file_hash(path: Path) -> str:
     with path.open("rb") as pdf_file:
         for block in iter(lambda: pdf_file.read(1024 * 1024), b""):
             h.update(block)
-    return h.hexdigest()[:16]
+    return h.hexdigest()
 
 
 def get_embedding_model():
@@ -154,83 +156,13 @@ def get_collection():
 
 
 def ingest_folder(papers_dir: str = "papers"):
-    _ingest_folder(papers_dir, force=False)
+    from src.sync import sync_library
+
+    sync_library(papers_dir)
 
 
 def reingest_folder(papers_dir: str = "papers"):
     """Reprocess every PDF, even if its content hash is already in Chroma."""
-    _ingest_folder(papers_dir, force=True)
+    from src.sync import sync_library
 
-
-def _ingest_folder(papers_dir: str, force: bool):
-    papers_path = Path(papers_dir)
-    if not papers_path.exists():
-        console.print(f"[red]Folder not found:[/red] {papers_dir}")
-        return
-
-    pdfs = sorted(
-        (path for path in papers_path.iterdir()
-         if path.is_file() and path.suffix.lower() == ".pdf"),
-        key=lambda path: path.name.lower(),
-    )
-    if not pdfs:
-        console.print(f"[yellow]No PDFs found in {papers_dir}/[/yellow]")
-        return
-
-    collection = get_collection()
-    existing = collection.get(include=["metadatas"])
-    existing_hashes = {
-        metadata.get("file_hash")
-        for metadata in (existing["metadatas"] or [])
-        if metadata and metadata.get("file_hash")
-    }
-    model = None
-
-    for pdf_path in pdfs:
-        h = file_hash(pdf_path)
-        if h in existing_hashes and not force:
-            console.print(f"[dim]Skipping (already ingested): {pdf_path.name}[/dim]")
-            continue
-
-        console.print(f"[cyan]Ingesting:[/cyan] {pdf_path.name}")
-        pages = extract_pages(pdf_path)
-        if not pages:
-            collection.delete(where={"source": pdf_path.name})
-            console.print(f"  [yellow]No extractable text (scanned PDF?), skipping.[/yellow]")
-            continue
-
-        title = guess_title(pdf_path, pages[0][1])
-
-        all_chunks, all_metas, all_ids = [], [], []
-        for page_num, text in pages:
-            for j, (section, chunk) in enumerate(chunk_sections(text)):
-                all_chunks.append(chunk)
-                all_metas.append({
-                    "source": pdf_path.name,
-                    "title": title,
-                    "section": section,
-                    "page": page_num,
-                    "file_hash": h,
-                })
-                all_ids.append(f"{h}-{page_num}-{j}")
-
-        if not all_chunks:
-            continue
-
-        if model is None:
-            model = get_embedding_model()
-        embeddings = model.encode(
-            all_chunks, show_progress_bar=False, normalize_embeddings=True
-        ).tolist()
-
-        collection.delete(where={"source": pdf_path.name})
-        collection.add(
-            ids=all_ids,
-            documents=all_chunks,
-            embeddings=embeddings,
-            metadatas=all_metas,
-        )
-        existing_hashes.add(h)
-        console.print(f"  [green]Added {len(all_chunks)} chunks.[/green]")
-
-    console.print("[bold green]Ingestion complete.[/bold green]")
+    sync_library(papers_dir, reindex=True)
