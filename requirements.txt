@@ -1,6 +1,7 @@
 pymupdf
 sentence-transformers
 chromadb
+numpy
 requests
 python-dotenv
 rich

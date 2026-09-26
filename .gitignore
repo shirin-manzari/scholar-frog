@@ -6,3 +6,8 @@ __pycache__/
 *.pyc
 .venv/
 venv/
+AGENTS.md
+ARCHITECTURE.md
+.DS_Store
+README.md
+LICENSE
