@@ -41,22 +41,43 @@ Answer (with inline citations as instructed):"""
 
 
 def _call_ollama(system: str, user: str) -> str:
-    model = os.getenv("OLLAMA_MODEL", "llama3.2")
-    url = os.getenv("OLLAMA_URL", "http://localhost:11434")
-    resp = requests.post(
-        f"{url}/api/chat",
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            "stream": False,
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    return resp.json()["message"]["content"]
+    model = os.getenv("OLLAMA_MODEL", "qwen3:8b")
+    url = os.getenv("OLLAMA_URL", "http://localhost:11434").rstrip("/")
+    timeout = float(os.getenv("OLLAMA_TIMEOUT", "180"))
+    try:
+        resp = requests.post(
+            f"{url}/api/chat",
+            json={
+                "model": model,
+                "messages": [
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                "think": False,
+                "stream": False,
+            },
+            timeout=timeout,
+        )
+        resp.raise_for_status()
+        return resp.json()["message"]["content"]
+    except requests.ConnectionError as exc:
+        raise RuntimeError(
+            f"Cannot connect to Ollama at {url}. Start Ollama or set OLLAMA_URL in .env."
+        ) from exc
+    except requests.Timeout as exc:
+        raise RuntimeError(
+            f"Ollama did not respond within {timeout:g} seconds. Check that model "
+            f"'{model}' is available, or increase OLLAMA_TIMEOUT in .env."
+        ) from exc
+    except requests.HTTPError as exc:
+        details = resp.text.strip()
+        if resp.status_code == 404:
+            message = f"Ollama model '{model}' was not found. Install it with: ollama pull {model}"
+        else:
+            message = f"Ollama returned HTTP {resp.status_code}: {details or exc}"
+        raise RuntimeError(message) from exc
+    except (KeyError, ValueError) as exc:
+        raise RuntimeError("Ollama returned an unexpected response.") from exc
 
 
 def _call_openai(system: str, user: str) -> str:

@@ -44,8 +44,12 @@ def main():
         console.print("[yellow]No relevant excerpts found. Have you added PDFs to the papers folder?[/yellow]")
         return
 
-    with console.status("[bold cyan]Generating grounded answer...[/bold cyan]"):
-        answer = generate_answer(args.question, chunks)
+    try:
+        with console.status("[bold cyan]Generating grounded answer...[/bold cyan]"):
+            answer = generate_answer(args.question, chunks)
+    except (RuntimeError, ImportError, ValueError) as exc:
+        console.print(f"[red]Generation failed:[/red] {exc}")
+        return 1
 
     console.print(Panel(Markdown(answer), title="Answer", border_style="green"))
 
@@ -59,4 +63,4 @@ def main():
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main() or 0)

@@ -22,7 +22,13 @@ embeddings, and the vector database stay on this machine. Scanned PDFs are
 skipped because OCR is not implemented.
 
 The default generation backend is Ollama. Install and start Ollama separately,
-then download the configured model (by default, `llama3.2`). Alternatively,
+then download the configured model (by default, `qwen3:8b`):
+
+```sh
+ollama pull qwen3:8b
+```
+
+Alternatively,
 set `LLM_BACKEND=openai` or `LLM_BACKEND=anthropic` in `.env` and provide the
 matching API key. Those backends require their optional SDKs (`openai` or
 `anthropic`) to be installed separately.
@@ -46,6 +52,9 @@ stored in `chroma_db/`.
 Settings are read from `.env`; see `.env.example` for backend names, model
 settings, and service URL. Ollama is local. OpenAI and Anthropic send the
 question and retrieved excerpts to the selected provider during generation.
+`OLLAMA_TIMEOUT` controls the local generation timeout in seconds. Scholarq
+disables Ollama thinking mode for supported models so it returns a direct
+answer promptly.
 
 ## Design choices
 
