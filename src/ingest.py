@@ -92,39 +92,39 @@ def chunk_sections(text: str, size: int = CHUNK_SIZE,
     if current_lines:
         sections.append((current_title, current_lines))
 
-    raw_chunks: list[tuple[str, str]] = []
+    chunks: list[tuple[str, str]] = []
     for section_title, lines in sections:
         paragraphs = [p.strip() for p in re.split(r"\n\s*\n", "\n".join(lines)) if p.strip()]
+        section_chunks = []
         buf = ""
         for para in paragraphs:
-            capacity = size if not raw_chunks else size - overlap
+            capacity = size if not section_chunks else size - overlap
             if not buf and len(para) <= capacity:
                 buf = para
             elif buf and len(buf) + len(para) + 1 <= capacity:
                 buf = f"{buf}\n{para}"
             else:
                 if buf:
-                    raw_chunks.append((section_title, buf))
+                    section_chunks.append(buf)
                     buf = ""
-                capacity = size if not raw_chunks else size - overlap
+                capacity = size if not section_chunks else size - overlap
                 if len(para) <= capacity:
                     buf = para
                 else:
                     start = 0
                     while start < len(para):
-                        capacity = size if not raw_chunks else size - overlap
+                        capacity = size if not section_chunks else size - overlap
                         part = para[start:start + capacity]
-                        raw_chunks.append((section_title, part))
+                        section_chunks.append(part)
                         start += len(part)
         if buf:
-            raw_chunks.append((section_title, buf))
+            section_chunks.append(buf)
 
-    result = []
-    for i, (section_title, chunk) in enumerate(raw_chunks):
-        if i > 0 and overlap and section_title == raw_chunks[i - 1][0]:
-            chunk = f"{raw_chunks[i - 1][1][-overlap:]}{chunk}"
-        result.append((section_title, chunk))
-    return result
+        for i, chunk in enumerate(section_chunks):
+            if i and overlap:
+                chunk = f"{section_chunks[i - 1][-overlap:]}{chunk}"
+            chunks.append((section_title, chunk))
+    return chunks
 
 
 def chunk_text(text: str, size: int = CHUNK_SIZE,

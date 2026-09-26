@@ -63,7 +63,7 @@ def main():
     console.print("\n[bold]Retrieved sources:[/bold]")
     seen = set()
     for c in chunks:
-        key = (c["title"], c["page"])
+        key = (c["source"], c["page"])
         if key not in seen:
             seen.add(key)
             console.print(f"  • {c['title']} — p.{c['page']}  [dim]({c['source']})[/dim]")
