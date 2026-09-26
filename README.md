@@ -41,6 +41,30 @@ New or changed PDFs are picked up automatically. Use `--reingest` to rebuild
 the index after changing how PDFs are processed. `--compare` prints results
 from each retrieval mode.
 
+To inspect or run library synchronization directly:
+
+```sh
+python ask.py sync --dry-run
+python ask.py sync
+python ask.py sync --force
+```
+
+ScholarQ scans the paper folder, including subfolders, and tracks PDFs in
+`chroma_db/documents.json`. SHA-256 content hashes identify documents;
+identical copies share one set of chunks, with the alphabetically first
+relative path used for citations. Renames update citation paths without
+re-embedding. Modified PDFs are indexed and verified before old chunks are
+removed. Deleted files are removed from the index, not from disk. A deletion
+batch above `SYNC_DELETE_THRESHOLD` (default: 50% of indexed documents)
+requires `--force`.
+
+The manifest is a recovery aid; ScholarQ checks Chroma records before
+reusing an entry. If interrupted during an index write, the pending manifest
+marker lets the next sync safely retry. Failed updates retain the previous
+indexed version where available. Dense and BM25 retrieval read the same
+Chroma collection; changes invalidate the in-memory BM25 cache. The dry run
+shows planned operations and does not write the manifest or collection.
+
 ## Citations
 
 ScholarQ assigns `[E1]`, `[E2]`, and so on to the final retrieved passages for
