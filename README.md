@@ -46,3 +46,10 @@ stored in `chroma_db/`.
 Settings are read from `.env`; see `.env.example` for backend names, model
 settings, and service URL. Ollama is local. OpenAI and Anthropic send the
 question and retrieved excerpts to the selected provider during generation.
+
+## Design choices
+
+PDFs are converted to Markdown before chunking. Chunks follow document
+headings when available, with oversized sections split further while keeping
+page references. Citations include section names when available, for example
+`[Paper Title, Methods, p.4]`; unstructured excerpts use `[Paper Title, p.4]`.
