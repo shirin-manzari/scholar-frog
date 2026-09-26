@@ -1,4 +1,5 @@
 import hashlib
+import re
 from pathlib import Path
 
 from rich.console import Console
@@ -49,7 +50,7 @@ def extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
             for i, page_chunk in enumerate(converted or []):
                 text = page_chunk.get("text", "") if isinstance(page_chunk, dict) else ""
                 metadata = page_chunk.get("metadata", {}) if isinstance(page_chunk, dict) else {}
-                page_number = metadata.get("page", i) + 1
+                page_number = metadata.get("page_number", metadata.get("page", i + 1))
                 if text.strip():
                     pages.append((page_number, text))
             if pages:
@@ -67,55 +68,77 @@ def extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
             return pages
 
 
-def chunk_text(text: str, size: int = CHUNK_SIZE, overlap: int = CHUNK_OVERLAP) -> list[str]:
-    """Paragraph-aware chunking: prefer splitting on blank lines, fall back to
-    hard splits only if a single paragraph is longer than `size`."""
+def chunk_sections(text: str, size: int = CHUNK_SIZE,
+                   overlap: int = CHUNK_OVERLAP) -> list[tuple[str, str]]:
+    """Chunk Markdown by heading sections, returning (section, chunk) pairs."""
     if size <= 0:
         raise ValueError("size must be greater than zero")
     if overlap < 0 or overlap >= size:
         raise ValueError("overlap must be between zero and size - 1")
 
-    paragraphs = [p.strip() for p in text.split("\n\n") if p.strip()]
-    chunks = []
-    split_groups = []
-    buf = ""
-    for para in paragraphs:
-        if len(buf) + len(para) + 1 <= size:
-            buf = f"{buf}\n{para}".strip()
+    sections: list[tuple[str, list[str]]] = []
+    current_title = "Untitled section"
+    current_lines: list[str] = []
+    heading = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
+    for line in text.splitlines():
+        match = heading.match(line.strip())
+        if match:
+            if current_lines:
+                sections.append((current_title, current_lines))
+            current_title = match.group(1).strip()
+            current_lines = [line.strip()]
         else:
-            if buf:
-                chunks.append(buf)
-                split_groups.append(None)
-            if len(para) > size:
-                step = size - overlap
-                split_group = len(split_groups)
-                split_parts = []
-                start = 0
-                while start < len(para):
-                    split_parts.append(para[start:start + size])
-                    if start + size >= len(para):
-                        break
-                    start += step
-                chunks.extend(split_parts)
-                split_groups.extend([split_group] * len(split_parts))
-                buf = ""
-            else:
+            current_lines.append(line)
+    if current_lines:
+        sections.append((current_title, current_lines))
+
+    raw_chunks: list[tuple[str, str]] = []
+    for section_title, lines in sections:
+        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", "\n".join(lines)) if p.strip()]
+        buf = ""
+        for para in paragraphs:
+            capacity = size if not raw_chunks else size - overlap
+            if not buf and len(para) <= capacity:
                 buf = para
-    if buf:
-        chunks.append(buf)
-        split_groups.append(None)
+            elif buf and len(buf) + len(para) + 1 <= capacity:
+                buf = f"{buf}\n{para}"
+            else:
+                if buf:
+                    raw_chunks.append((section_title, buf))
+                    buf = ""
+                capacity = size if not raw_chunks else size - overlap
+                if len(para) <= capacity:
+                    buf = para
+                else:
+                    start = 0
+                    while start < len(para):
+                        capacity = size if not raw_chunks else size - overlap
+                        part = para[start:start + capacity]
+                        raw_chunks.append((section_title, part))
+                        start += len(part)
+        if buf:
+            raw_chunks.append((section_title, buf))
 
     result = []
-    for i, chunk in enumerate(chunks):
-        if (i > 0 and overlap and
-                not (split_groups[i] is not None and split_groups[i] == split_groups[i - 1])):
-            chunk = f"{chunks[i - 1][-overlap:]} {chunk}"
-        result.append(chunk)
+    for i, (section_title, chunk) in enumerate(raw_chunks):
+        if i > 0 and overlap and section_title == raw_chunks[i - 1][0]:
+            chunk = f"{raw_chunks[i - 1][1][-overlap:]}{chunk}"
+        result.append((section_title, chunk))
     return result
 
 
+def chunk_text(text: str, size: int = CHUNK_SIZE,
+               overlap: int = CHUNK_OVERLAP) -> list[str]:
+    """Compatibility helper returning heading-aware Markdown chunks."""
+    return [chunk for _, chunk in chunk_sections(text, size, overlap)]
+
+
 def guess_title(pdf_path: Path, first_page_text: str) -> str:
-    """Best-effort title guess: first non-trivial line of page 1."""
+    """Prefer the first level-1 Markdown heading, then a useful text line."""
+    for line in first_page_text.splitlines():
+        match = re.match(r"^#\s+(.+?)\s*#*\s*$", line.strip())
+        if match and match.group(1).strip():
+            return match.group(1).strip()
     for line in first_page_text.splitlines():
         line = line.strip()
         if len(line) > 15 and not line.isupper():
@@ -171,11 +194,12 @@ def ingest_folder(papers_dir: str = "papers"):
 
         all_chunks, all_metas, all_ids = [], [], []
         for page_num, text in pages:
-            for j, chunk in enumerate(chunk_text(text)):
+            for j, (section, chunk) in enumerate(chunk_sections(text)):
                 all_chunks.append(chunk)
                 all_metas.append({
                     "source": pdf_path.name,
                     "title": title,
+                    "section": section,
                     "page": page_num,
                     "file_hash": h,
                 })

@@ -2,7 +2,7 @@ from src.ingest import get_collection, get_embedding_model
 
 
 def retrieve(question: str, top_k: int = 6) -> list[dict]:
-    """Returns a list of {text, source, title, page, distance} dicts,
+    """Returns a list of {text, source, title, section, page, distance} dicts,
     most relevant first."""
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")
@@ -29,6 +29,7 @@ def retrieve(question: str, top_k: int = 6) -> list[dict]:
             "text": doc,
             "source": meta["source"],
             "title": meta["title"],
+            "section": meta.get("section", "Untitled section"),
             "page": meta["page"],
             "distance": dist,
         })
