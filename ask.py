@@ -1,4 +1,5 @@
 import argparse
+import sys
 import time
 
 from rich.console import Console
@@ -8,11 +9,50 @@ from rich.panel import Panel
 from src.generate import generate_answer
 from src.ingest import ingest_folder, reingest_folder
 from src.retrieve import RETRIEVAL_MODES, RetrievalConfig, retrieve
+from src.sync import SyncError, sync_library
 
 console = Console()
 
 
+def sync_main(argv=None):
+    parser = argparse.ArgumentParser(description="Synchronize the paper library and search index.")
+    parser.add_argument("--papers", default="papers", help="Paper library directory")
+    parser.add_argument("--dry-run", action="store_true", help="Preview without changing the index")
+    parser.add_argument("--force", action="store_true",
+                        help="Allow deletion batches above SYNC_DELETE_THRESHOLD")
+    args = parser.parse_args(argv)
+    try:
+        with console.status("[bold cyan]Scanning paper library...[/bold cyan]"):
+            plan = sync_library(args.papers, dry_run=args.dry_run, force=args.force)
+    except SyncError as exc:
+        console.print(f"[red]Synchronization stopped:[/red] {exc}")
+        return 1
+
+    title = "Library synchronization preview" if args.dry_run else "Library synchronization"
+    console.print(f"\n[bold]{title}[/bold]")
+    for label, count in (
+        ("Added", plan.added), ("Modified", plan.modified), ("Renamed", plan.renamed),
+        ("Deleted", plan.deleted), ("Unchanged", plan.unchanged),
+        ("Duplicate copies", plan.duplicated), ("Failed", len(plan.failures)),
+    ):
+        console.print(f"{label + ':':<20}{count}")
+    if plan.operations:
+        console.print("\n[bold]Planned operations:[/bold]" if args.dry_run else "\n[bold]Changes:[/bold]")
+        for operation in plan.operations:
+            console.print(f"  {operation}")
+    if plan.failures:
+        console.print("\n[red]Failures:[/red]")
+        for failure in plan.failures:
+            console.print(f"  • {failure}")
+    if args.dry_run:
+        console.print("\n[dim]No changes applied.[/dim]")
+    return 1 if plan.failures else 0
+
+
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "sync":
+        return sync_main(sys.argv[2:])
+
     parser = argparse.ArgumentParser(description="Ask a question across your PDF papers.")
     try:
         config = RetrievalConfig.from_env()
@@ -56,10 +96,14 @@ def main():
 
     if not args.no_ingest or args.ingest_only or args.reingest:
         console.print("[bold]Checking for new papers to ingest...[/bold]")
-        if args.reingest:
-            reingest_folder(args.papers)
-        else:
-            ingest_folder(args.papers)
+        try:
+            if args.reingest:
+                reingest_folder(args.papers)
+            else:
+                ingest_folder(args.papers)
+        except SyncError as exc:
+            console.print(f"[red]Synchronization stopped:[/red] {exc}")
+            return 1
 
     if args.ingest_only:
         return
