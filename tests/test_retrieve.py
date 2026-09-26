@@ -276,5 +276,5 @@ def test_generation_context_uses_retrieved_citation_metadata(collection, monkeyp
 
     context = build_context([hit])
 
-    assert context.startswith("[Paper A, Methods, p.2]")
+    assert context.startswith("[E1]\nSource: Paper A (paper-a.pdf)\nPage: 2\nContent:")
     assert hit["metadata"]["file_hash"] == "hash-a"
