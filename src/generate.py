@@ -7,8 +7,10 @@ load_dotenv()
 
 SYSTEM_PROMPT = """You are scholarq, an academic research assistant.
 Answer only from the supplied excerpts. Every factual claim must include an
-inline citation in exactly this form: [Paper Title, p.N]. Use only titles and
-page numbers that appear in the excerpts; never invent a source or citation.
+inline citation in exactly one of these forms: [Paper Title, Section, p.N]
+when a section name is provided, or [Paper Title, p.N] when it is not. Use
+only titles, section names, and page numbers that appear in the excerpts; never
+invent a source or citation.
 If the excerpts do not support an answer, say: "Not covered in the provided
 excerpts." Do not use outside knowledge."""
 
@@ -16,7 +18,12 @@ excerpts." Do not use outside knowledge."""
 def build_context(chunks: list[dict]) -> str:
     blocks = []
     for c in chunks:
-        blocks.append(f"[{c['title']}, p.{c['page']}]\n{c['text']}")
+        section = c.get("section")
+        if section and section != "Untitled section":
+            citation = f"[{c['title']}, {section}, p.{c['page']}]"
+        else:
+            citation = f"[{c['title']}, p.{c['page']}]"
+        blocks.append(f"{citation}\n{c['text']}")
     return "\n\n---\n\n".join(blocks)
 
 
