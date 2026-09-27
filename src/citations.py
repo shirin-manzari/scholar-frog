@@ -1,6 +1,19 @@
 """Query-local evidence references and deterministic citation checks."""
 from dataclasses import dataclass, field
+from enum import Enum
 import re
+
+
+class GenerationStatus(str, Enum):
+    ANSWERED = "answered"
+    ABSTAINED = "abstained"
+    VALIDATION_FAILED = "validation_failed"
+
+
+class AbstentionReason(str, Enum):
+    NO_RELEVANT_EVIDENCE = "no_relevant_evidence"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    CONFLICTING_EVIDENCE = "conflicting_evidence"
 
 
 @dataclass(frozen=True)
@@ -34,6 +47,13 @@ class CitationValidation:
     valid_evidence: list[Evidence]
     coverage_warnings: list[str] = field(default_factory=list)
     semantic_support: str = "not_checked"
+    applicable: bool = True
+
+    @property
+    def outcome(self) -> str:
+        if not self.applicable:
+            return "not_applicable"
+        return "passed" if self.references_valid else "failed"
 
 
 @dataclass
@@ -44,6 +64,8 @@ class GenerationResult:
     validation: CitationValidation
     regeneration_attempts: int
     error_messages: list[str] = field(default_factory=list)
+    status: GenerationStatus = GenerationStatus.ANSWERED
+    abstention_reason: AbstentionReason | None = None
 
 
 _CITATION = re.compile(r"(?<![\w])\[(E\d+)\](?!\s*\()")

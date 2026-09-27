@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
+from src.citations import GenerationStatus
 from src.generate import generate_answer
 from src.ingest import ingest_folder, reingest_folder, get_index_config, index_status, active_collection_name, DB_DIR
 from src.index_config import IndexCompatibilityError, new_metadata, read_metadata, write_metadata
@@ -148,10 +149,6 @@ def main():
         console.print(f"[red]Index cannot be used safely:[/red] {exc}")
         return 1
 
-    if not chunks:
-        console.print("[yellow]No relevant excerpts found. Have you added PDFs to the papers folder?[/yellow]")
-        return
-
     try:
         with console.status("[bold cyan]Generating grounded answer...[/bold cyan]"):
             result = generate_answer(args.question, chunks, max_retries=args.citation_retries,
@@ -161,23 +158,34 @@ def main():
         console.print(f"[red]Generation failed:[/red] {exc}")
         return 1
 
-    console.print(Panel(Markdown(result.answer), title="Answer", border_style="green"))
-    if result.validation.references_valid:
+    if result.status is GenerationStatus.ABSTAINED:
+        console.print(Panel(Markdown(result.answer), title="No supported answer", border_style="yellow"))
+    elif result.status is GenerationStatus.VALIDATION_FAILED:
+        console.print(Panel(Markdown(result.answer), title="Answer unavailable", border_style="red"))
+    else:
+        console.print(Panel(Markdown(result.answer), title="Answer", border_style="green"))
+    if result.status is GenerationStatus.ANSWERED and result.validation.references_valid:
         console.print("\n[bold]References:[/bold]")
         for item in result.validation.valid_evidence:
             console.print(f"  [{item.evidence_id}] {item.reference}")
-    if result.validation.coverage_warnings:
+    if result.status is GenerationStatus.ANSWERED and result.validation.coverage_warnings:
         console.print("\n[yellow]Possible uncited factual sentences (heuristic):[/yellow]")
         for sentence in result.validation.coverage_warnings:
             console.print(f"  • {sentence}")
     if args.debug_citations:
-        console.print("\n[bold]Citation validation:[/bold] " + ("valid references; semantic support not checked" if result.validation.references_valid else "FAILED"))
+        console.print(f"\n[bold]Generation status:[/bold] {result.status.value}")
+        if result.abstention_reason is not None:
+            console.print(f"Abstention reason: {result.abstention_reason.value}")
+        validation_outcome = result.validation.outcome
+        if result.validation.references_valid:
+            validation_outcome += "; semantic support not checked"
+        console.print(f"Citation validation: {validation_outcome}")
         console.print(f"Regeneration attempts: {result.regeneration_attempts}")
         for error in result.error_messages:
             console.print(f"  [red]{error}[/red]")
         for item in result.evidence:
             console.print(f"  [{item.evidence_id}] chunk={item.chunk_id} {item.reference}")
-        if not result.validation.references_valid:
+        if result.status is GenerationStatus.VALIDATION_FAILED:
             console.print("Original generated response:")
             console.print(result.original_answer)
 

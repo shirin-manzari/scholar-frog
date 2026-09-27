@@ -79,6 +79,18 @@ not confirm that the passage supports the claim. Read important passages in
 the original PDF. ScholarQ can also warn about sentences that may lack
 citations; those warnings are heuristic and can be imperfect.
 
+Generation returns one of three outcomes. **Answered** responses contain
+evidence citations and go through the normal reference checks. **Abstained**
+responses are used when evidence is missing, insufficient, or conflicting; the
+model must return an explicit structured abstention with an empty answer, and
+ScholarQ displays a fixed message without requiring citations. This is a normal
+outcome and citation validation is marked not applicable. **Validation failed**
+means the structured response was malformed or an answer still failed reference
+checks after the configured bounded retries; ScholarQ hides that unverified
+answer. Substantive answers cannot avoid citation checks by labeling themselves
+as abstentions. Malformed output is retried using the same evidence and retry
+limit as citation repair.
+
 Use `--citation-retries 0` to skip repair attempts,
 `--no-citation-validation` to opt out of reference checks, or
 `--no-citation-coverage` to turn off coverage warnings. `--debug-citations`
