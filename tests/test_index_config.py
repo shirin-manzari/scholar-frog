@@ -76,10 +76,10 @@ def test_rebuild_activates_validated_staging_collection_and_preserves_old_on_fai
     client = chromadb.PersistentClient(path=str(db))
     old_name = stored["active_collection"]
     old_count = client.get_collection(old_name).count()
-    manifest = (db / "documents.json").read_bytes()
+    manifest = (db / stored["manifest_name"]).read_bytes()
 
     monkeypatch.setattr(sync, "_prepare", lambda *args: (_ for _ in ()).throw(ValueError("stop")))
     assert ask.index_main(["rebuild", "--papers", str(papers)]) == 1
     assert read_metadata(db)["active_collection"] == old_name
     assert client.get_collection(old_name).count() == old_count
-    assert (db / "documents.json").read_bytes() == manifest
+    assert (db / stored["manifest_name"]).read_bytes() == manifest

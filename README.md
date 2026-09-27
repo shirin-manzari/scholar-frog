@@ -98,6 +98,8 @@ ScholarQ records the indexing configuration used to create the active ChromaDB c
 
 An index marked `ready` has version metadata and a persisted manifest describing its committed contents. A synchronization can still report failed PDFs while the successfully committed documents remain usable; failures remain retryable on the next sync.
 
+Retrieval filters every Chroma result against the active document manifest. In-process sync and retrieval use a shared lock for a consistent snapshot; concurrent writers in separate ScholarQ processes are not coordinated and should be avoided.
+
 | Setting | Default |
 | --- | --- |
 | `embedding_model` | `BAAI/bge-small-en-v1.5` |

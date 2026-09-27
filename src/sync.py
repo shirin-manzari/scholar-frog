@@ -1,7 +1,10 @@
 """Incremental, recoverable synchronization of the paper folder and Chroma."""
 import json
+import hashlib
 import os
 import tempfile
+import threading
+import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,6 +16,110 @@ from src.index_config import (IndexCompatibilityError, check_compatibility,
 
 class SyncError(RuntimeError):
     """The paper library could not be safely synchronized."""
+
+
+INDEX_LOCK = threading.RLock()
+_snapshot_cache: dict[str, tuple[tuple[int, int, int, str], "CommittedSnapshot"]] = {}
+
+
+@dataclass(frozen=True)
+class CommittedSnapshot:
+    revision: str
+    chunk_ids: frozenset[str]
+    owners: dict[str, dict]
+
+
+def _committed_revision(documents: dict, config_fingerprint: str) -> str:
+    revision_rows = []
+    for digest, entry in sorted(documents.items()):
+        if entry.get("status") not in {"indexed", "stale"}:
+            continue
+        ids = entry.get("chunk_ids")
+        if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
+            raise IndexCompatibilityError(
+                "incomplete or corrupted",
+                f"Committed document {digest[:12]} has no valid committed chunk ID list.",
+            )
+        revision_rows.append((digest, ids, entry.get("paths", [])))
+    revision_json = json.dumps(
+        [config_fingerprint, revision_rows], sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(revision_json.encode()).hexdigest()
+
+
+def committed_snapshot(*, collection_count: int = 0) -> CommittedSnapshot:
+    """Return the committed manifest view; pending and orphan records are excluded."""
+    path = manifest_path()
+    if not path.exists():
+        if collection_count:
+            raise IndexCompatibilityError(
+                "incomplete or corrupted",
+                f"The active Chroma collection has {collection_count} chunks but its document manifest is missing. "
+                "Restore the manifest or rebuild the index before retrieval.",
+            )
+        return CommittedSnapshot("empty", frozenset(), {})
+    try:
+        stat = path.stat()
+        config_fingerprint = ingest.get_index_config().fingerprint
+        signature = (stat.st_mtime_ns, stat.st_size, stat.st_ino, config_fingerprint)
+        with INDEX_LOCK:
+            cached = _snapshot_cache.get(str(path))
+            if cached and cached[0] == signature:
+                return cached[1]
+            data = _read_manifest(path=path)
+            if data.get("index_version") != config_fingerprint:
+                raise IndexCompatibilityError(
+                    "configuration mismatch",
+                    "The document manifest fingerprint does not match the active index configuration; rebuild required.",
+                )
+            owners = {}
+            revision_rows = []
+            for digest, entry in sorted(data["documents"].items()):
+                if entry.get("status") not in {"indexed", "stale"}:
+                    continue
+                ids = entry.get("chunk_ids")
+                if not isinstance(ids, list) or any(not isinstance(item, str) for item in ids):
+                    raise IndexCompatibilityError(
+                        "incomplete or corrupted",
+                        f"Committed document {digest[:12]} has no valid committed chunk ID list.",
+                    )
+                paths = entry.get("paths", [])
+                owner = {"document_id": digest, "paths": paths}
+                for chunk_id in ids:
+                    if chunk_id in owners:
+                        raise IndexCompatibilityError(
+                            "incomplete or corrupted",
+                            f"Chunk ID {chunk_id!r} is referenced by multiple committed documents.",
+                        )
+                    owners[chunk_id] = owner
+                revision_rows.append((digest, ids, paths))
+            revision_json = json.dumps(
+                [config_fingerprint, revision_rows], sort_keys=True, separators=(",", ":")
+            )
+            revision = hashlib.sha256(revision_json.encode()).hexdigest()
+            snapshot = CommittedSnapshot(
+                revision,
+                frozenset(owners), owners,
+            )
+            if cached and cached[1].revision == revision:
+                _snapshot_cache[str(path)] = (signature, cached[1])
+                return cached[1]
+            _snapshot_cache[str(path)] = (signature, snapshot)
+            return snapshot
+    except IndexCompatibilityError:
+        raise
+    except (SyncError, OSError, ValueError, TypeError, KeyError) as exc:
+        raise IndexCompatibilityError(
+            "incomplete or corrupted", f"Cannot load committed document manifest {path}: {exc}"
+        ) from exc
+
+
+def _invalidate_snapshot(path: Path | None = None):
+    with INDEX_LOCK:
+        if path is None:
+            _snapshot_cache.clear()
+        else:
+            _snapshot_cache.pop(str(path), None)
 
 
 @dataclass
@@ -33,23 +140,35 @@ class SyncPlan:
     prepare_hashes: set[str] = field(default_factory=set)
 
 
-def manifest_path() -> Path:
-    return Path(ingest.DB_DIR) / ingest.MANIFEST_NAME
+def manifest_path(collection_name: str | None = None) -> Path:
+    root = Path(ingest.DB_DIR)
+    if collection_name:
+        metadata = read_metadata(ingest.DB_DIR)
+        active = (metadata or {}).get("active_collection", ingest.COLLECTION_NAME)
+        if collection_name == active:
+            filename = (metadata or {}).get("manifest_name", ingest.MANIFEST_NAME)
+        else:
+            filename = f"documents.{collection_name}.json"
+        return root / filename
+    metadata = read_metadata(ingest.DB_DIR)
+    return root / (metadata or {}).get("manifest_name", ingest.MANIFEST_NAME)
 
 
-def _read_manifest() -> dict:
-    path = manifest_path()
+def _read_manifest(collection_name: str | None = None, *, path: Path | None = None) -> dict:
+    path = path or manifest_path(collection_name)
     if not path.exists():
         return {"version": 1, "documents": {}, "pending": {}}
     try:
         data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            raise ValueError("manifest root must be an object")
         if data.get("version") != 1 or not isinstance(data.get("documents"), dict):
             raise ValueError("unsupported manifest format")
         if not isinstance(data.get("pending", {}), dict):
             raise ValueError("invalid pending document list")
         data.setdefault("pending", {})
         return data
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError, TypeError, AttributeError, json.JSONDecodeError) as exc:
         raise SyncError(f"Cannot read document manifest {path}: {exc}") from exc
 
 
@@ -140,11 +259,23 @@ def _group_records(stored: dict, files: list[dict]) -> dict[str, list[dict]]:
     return grouped
 
 
+def _committed_groups(groups: dict[str, list[dict]], manifest: dict) -> dict[str, list[dict]]:
+    """Filter physical Chroma rows to the manifest's committed version IDs."""
+    committed = {}
+    for digest, entry in manifest.get("documents", {}).items():
+        if entry.get("status") not in {"indexed", "stale"}:
+            continue
+        ids = set(entry.get("chunk_ids", []))
+        if ids:
+            committed[digest] = [row for row in groups.get(digest, []) if row["id"] in ids]
+    return committed
+
+
 def plan_sync(papers_dir: str = "papers", *, dry_run: bool = False,
               reindex: bool = False, collection_name: str | None = None) -> SyncPlan:
     root = Path(papers_dir).expanduser().resolve()
     files = _scan(root)
-    manifest = _read_manifest()
+    manifest = _read_manifest(collection_name)
     stored = _read_index(dry_run, collection_name)
     groups = _group_records(stored, files)
     old = manifest["documents"]
@@ -183,7 +314,7 @@ def plan_sync(papers_dir: str = "papers", *, dry_run: bool = False,
             plan.prepare_hashes.add(digest)
             if len(paths) > 1:
                 plan.duplicated += len(paths) - 1
-        elif digest in pending or reindex or entry.get("status") == "stale" or (
+        elif digest in pending or reindex or entry.get("status") in {"stale", "orphaned"} or (
             not records and not is_empty_entry
         ) or not ids_match or (
             entry and entry.get("configuration_fingerprint") != ingest.get_index_config().fingerprint
@@ -194,6 +325,11 @@ def plan_sync(papers_dir: str = "papers", *, dry_run: bool = False,
                 "forced reindex" if reindex else "index incomplete or config changed"
             )
             plan.operations.append(f"~ Update {paths[0]} ({reason})")
+        elif records and not entry:
+            # Rows lacking a committed manifest entry are never adopted.
+            plan.modified += 1
+            plan.prepare_hashes.add(digest)
+            plan.operations.append(f"~ Recover uncommitted Chroma chunks: {paths[0]}")
         elif entry and sorted(entry.get("paths", [])) != paths:
             old_paths = set(entry.get("paths", []))
             added_paths = set(paths) - old_paths
@@ -204,12 +340,6 @@ def plan_sync(papers_dir: str = "papers", *, dry_run: bool = False,
             else:
                 plan.duplicated += len(added_paths)
                 plan.operations.append(f"> Update source paths ({len(paths)} identical copies): {paths[0]}")
-        elif not entry:
-            # Adopt records from the older hash-only index without embeddings.
-            plan.unchanged += 1
-            if len(paths) > 1:
-                plan.duplicated += len(paths) - 1
-            plan.operations.append(f"= Reconcile existing index: {paths[0]}")
         else:
             plan.unchanged += 1
             if len(paths) > 1:
@@ -258,8 +388,8 @@ def _prepare(item: dict, digest: str, paths: list[str]) -> dict:
             "embeddings": vectors}
 
 
-def _write_manifest(data: dict):
-    path = manifest_path()
+def _write_manifest(data: dict, *, path: Path | None = None, collection_name: str | None = None):
+    path = path or manifest_path(collection_name)
     path.parent.mkdir(parents=True, exist_ok=True)
     temporary = None
     try:
@@ -290,6 +420,16 @@ def _delete_threshold() -> float:
 def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
                  force: bool = False, reindex: bool = False,
                  collection_name: str | None = None) -> SyncPlan:
+    with INDEX_LOCK:
+        return _sync_library_locked(
+            papers_dir, dry_run=dry_run, force=force, reindex=reindex,
+            collection_name=collection_name,
+        )
+
+
+def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
+                         force: bool = False, reindex: bool = False,
+                         collection_name: str | None = None) -> SyncPlan:
     plan = plan_sync(papers_dir, dry_run=dry_run, reindex=reindex,
                      collection_name=collection_name)
     if dry_run:
@@ -310,7 +450,12 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
         collection = chromadb.PersistentClient(path=ingest.DB_DIR).get_or_create_collection(collection_name)
     else:
         collection = ingest.get_collection()
+    active_manifest_path = manifest_path(collection_name)
+    previous_committed_revision = _committed_revision(
+        plan.manifest.get("documents", {}), ingest.get_index_config().fingerprint
+    )
     old_groups = _group_records(plan.stored, plan.files)
+    committed_groups = _committed_groups(old_groups, plan.manifest)
     by_hash: dict[str, list[dict]] = {}
     for item in plan.files:
         by_hash.setdefault(item["hash"], []).append(item)
@@ -327,8 +472,14 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
             plan.failures.append(f"{paths[0]}: {exc}")
             ingest.console.print(f"[red]Could not prepare {paths[0]}:[/red] {exc}")
 
+    # Each reprocessed document gets new physical IDs so a failed replacement
+    # cannot overwrite the version that remains committed and visible.
+    for digest, document in prepared.items():
+        version_id = uuid.uuid4().hex[:16]
+        document["ids"] = [f"{chunk_id}-{version_id}" for chunk_id in document["ids"]]
+
     # Record intended IDs before touching Chroma. A crash during upsert leaves
-    # a durable marker so the next run re-upserts and verifies the full set.
+    # a durable marker so the next run can retry without exposing these IDs.
     pending = dict(plan.manifest.get("pending", {}))
     for digest, document in prepared.items():
         pending[digest] = {
@@ -341,12 +492,11 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
                 "version": 1, "index_version": ingest.get_index_config().fingerprint,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "documents": plan.manifest["documents"], "pending": pending,
-            })
+            }, path=active_manifest_path)
         except OSError as exc:
             raise SyncError(f"Could not persist recovery marker before indexing: {exc}") from exc
 
-    # Deterministic IDs make interrupted upserts safe to retry. Old versions
-    # remain present until every replacement has been inserted and read back.
+    # Only verified writes are candidates for the final manifest commit.
     current: dict[str, list[dict]] = {}
     for digest, document in prepared.items():
         try:
@@ -362,6 +512,10 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
                 expected_docs = dict(zip(document["ids"], document["documents"]))
                 if actual_docs != expected_docs:
                     raise RuntimeError("Chroma returned document text that differs from the prepared chunks")
+                actual_metadata = dict(zip(actual["ids"], actual["metadatas"]))
+                expected_metadata = dict(zip(document["ids"], document["metadatas"]))
+                if actual_metadata != expected_metadata:
+                    raise RuntimeError("Chroma returned metadata that differs from the prepared chunks")
                 current[digest] = [
                     {"id": chunk_id, "metadata": metadata}
                     for chunk_id, metadata in zip(document["ids"], document["metadatas"])
@@ -376,7 +530,7 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
     # Existing content is reusable when it is already verified in Chroma.
     for digest, items in by_hash.items():
         if digest not in current and digest not in plan.prepare_hashes:
-            current[digest] = old_groups.get(digest, [])
+            current[digest] = committed_groups.get(digest, [])
 
     # If a changed PDF failed, retain the previous version for that path and
     # mark it stale. This avoids losing the last successfully indexed content.
@@ -386,7 +540,7 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
             continue
         if set(entry.get("paths", [])) & failed_paths:
             stale_hashes.add(old_hash)
-            current[old_hash] = old_groups.get(old_hash, [])
+            current[old_hash] = committed_groups.get(old_hash, [])
 
     active = set(current)
     all_groups = dict(old_groups)
@@ -432,7 +586,7 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
                 plan.failures.append(f"{paths[0]}: metadata update failed: {exc}")
                 previous_paths = previous.get("paths", [])
                 paths = previous_paths or paths
-                records = old_groups.get(digest, records)
+                records = committed_groups.get(digest, records)
 
         file_info = source_files[0] if source_files else {}
         chunk_ids = [row["id"] for row in records]
@@ -450,20 +604,6 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
             "configuration_fingerprint": ingest.get_index_config().fingerprint,
         }
 
-    obsolete = set(old_groups) - active
-    deleted_successfully = False
-    for digest in sorted(obsolete):
-        try:
-            collection.delete(ids=[row["id"] for row in old_groups[digest]])
-            deleted_successfully = True
-        except Exception as exc:
-            plan.failures.append(f"Could not remove obsolete document {digest[:12]}: {exc}")
-            old_entry = plan.manifest["documents"].get(digest, {})
-            if old_entry:
-                old_entry = dict(old_entry)
-                old_entry["status"] = "orphaned"
-                next_documents[digest] = old_entry
-
     pending = {digest: details for digest, details in pending.items()
                if digest not in current and digest in by_hash}
     manifest = {
@@ -471,9 +611,53 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
         "updated_at": timestamp, "documents": next_documents, "pending": pending,
     }
     try:
-        _write_manifest(manifest)
+        _write_manifest(manifest, path=active_manifest_path)
     except OSError as exc:
         raise SyncError(f"Index updated but manifest write failed: {exc}") from exc
+
+    committed_revision = _committed_revision(
+        next_documents, ingest.get_index_config().fingerprint
+    )
+    if committed_revision != previous_committed_revision:
+        _invalidate_snapshot(active_manifest_path)
+
+    # The manifest is the visibility commit point. Retire old physical chunks
+    # afterwards so a failed replacement cannot hide the previous version.
+    committed_ids = {
+        chunk_id
+        for entry in next_documents.values()
+        if entry.get("status") in {"indexed", "stale"}
+        for chunk_id in entry.get("chunk_ids", [])
+    }
+    obsolete_by_document = {}
+    for digest, records in old_groups.items():
+        obsolete = [record for record in records if record["id"] not in committed_ids]
+        if obsolete:
+            obsolete_by_document[digest] = obsolete
+
+    deleted_successfully = False
+    orphan_manifest_changed = False
+    for digest, records in obsolete_by_document.items():
+        try:
+            collection.delete(ids=[row["id"] for row in records])
+            deleted_successfully = True
+        except Exception as exc:
+            plan.failures.append(f"Could not remove obsolete chunks for document {digest[:12]}: {exc}")
+            old_entry = plan.manifest["documents"].get(digest, {})
+            if digest not in next_documents and old_entry:
+                orphan_entry = dict(old_entry)
+                orphan_entry["status"] = "orphaned"
+                next_documents[digest] = orphan_entry
+                orphan_manifest_changed = True
+
+    if orphan_manifest_changed:
+        manifest["documents"] = next_documents
+        try:
+            _write_manifest(manifest, path=active_manifest_path)
+        except OSError as exc:
+            # The first commit already excludes the obsolete IDs, so failure
+            # to record an orphan cannot make those chunks searchable again.
+            plan.failures.append(f"Could not record orphaned chunks in manifest: {exc}")
 
     successfully_prepared = set(prepared) & set(current)
     plan.succeeded = len(successfully_prepared)
@@ -499,7 +683,7 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
                 f"Index content and manifest were committed, but version metadata could not be safely updated: {exc}"
             ) from exc
 
-    if prepared or obsolete or metadata_changed:
+    if index_changed:
         try:
             from src import retrieve
             retrieve._bm25_cache = None

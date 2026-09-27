@@ -3,7 +3,6 @@ import sys
 import time
 import uuid
 import os
-from pathlib import Path
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -13,7 +12,7 @@ from src.generate import generate_answer
 from src.ingest import ingest_folder, reingest_folder, get_index_config, index_status, active_collection_name, DB_DIR
 from src.index_config import IndexCompatibilityError, new_metadata, read_metadata, write_metadata
 from src.retrieve import RETRIEVAL_MODES, RetrievalConfig, retrieve
-from src.sync import SyncError, sync_library
+from src.sync import INDEX_LOCK, SyncError, manifest_path as sync_manifest_path, sync_library
 
 console = Console()
 
@@ -248,7 +247,7 @@ def index_main(argv=None):
         console.print("New configuration:")
         console.print_json(data=config.canonical())
         staging = f"papers_staging_{uuid.uuid4().hex[:12]}"
-        manifest = Path(DB_DIR) / "documents.json"
+        manifest = sync_manifest_path(staging)
         previous_manifest = manifest.read_bytes() if manifest.exists() else None
         try:
             result = sync_library(args.papers, force=True, reindex=True, collection_name=staging)
@@ -266,7 +265,9 @@ def index_main(argv=None):
                     raise RuntimeError("Staging collection embedding dimension does not match configuration")
             metadata = new_metadata(config, previous=old)
             metadata["active_collection"] = staging
-            write_metadata(DB_DIR, metadata)
+            metadata["manifest_name"] = manifest.name
+            with INDEX_LOCK:
+                write_metadata(DB_DIR, metadata)
             retrieve._bm25_cache = None
             console.print(f"[green]Activated replacement index {staging} ({count} chunks).[/green]")
             return 0

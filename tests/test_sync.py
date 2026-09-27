@@ -294,7 +294,7 @@ def test_manifest_failure_before_index_write_is_safe(library, monkeypatch):
     root, db, collection, prepared = library
     add_pdf(root, "a.pdf", "recover me")
     original_write = sync._write_manifest
-    monkeypatch.setattr(sync, "_write_manifest", lambda data: (_ for _ in ()).throw(OSError("disk full")))
+    monkeypatch.setattr(sync, "_write_manifest", lambda data, **kwargs: (_ for _ in ()).throw(OSError("disk full")))
     with pytest.raises(sync.SyncError, match="recovery marker"):
         sync.sync_library(str(root))
     assert not collection.rows
@@ -310,12 +310,12 @@ def test_final_manifest_failure_does_not_mark_new_index_ready(library, monkeypat
     original_write = sync._write_manifest
     calls = 0
 
-    def fail_final_write(data):
+    def fail_final_write(data, **kwargs):
         nonlocal calls
         calls += 1
         if calls == 2:
             raise OSError("disk full")
-        return original_write(data)
+        return original_write(data, **kwargs)
 
     monkeypatch.setattr(sync, "_write_manifest", fail_final_write)
     with pytest.raises(sync.SyncError, match="manifest write failed"):
@@ -410,7 +410,7 @@ def test_real_chroma_collection_supports_sync_operations(tmp_path, monkeypatch):
     assert collection.count() == 0
 
 
-def test_legacy_hash_only_records_survive_pre_manifest_rename(library):
+def test_uncommitted_hash_only_record_is_reindexed_instead_of_adopted(library):
     root, _, collection, prepared = library
     path = add_pdf(root, "old-name.pdf", "legacy contents")
     digest = ingest.file_hash(path)
@@ -425,7 +425,9 @@ def test_legacy_hash_only_records_survive_pre_manifest_rename(library):
     path.rename(root / "new-name.pdf")
 
     result = sync.sync_library(str(root))
-    assert result.unchanged == 1
-    assert len(prepared) == 0
-    assert list(collection.rows) == [legacy_id]
-    assert collection.rows[legacy_id]["metadata"]["source"] == "new-name.pdf"
+    assert result.succeeded == 1
+    assert len(prepared) == 1
+    assert legacy_id not in collection.rows
+    assert len(collection.rows) == 1
+    row = next(iter(collection.rows.values()))
+    assert row["metadata"]["source"] == "new-name.pdf"

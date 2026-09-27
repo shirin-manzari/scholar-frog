@@ -4,6 +4,7 @@ from types import SimpleNamespace
 import pytest
 
 import src.retrieve as retrieval
+from src.sync import CommittedSnapshot
 from src.generate import build_context
 
 
@@ -15,8 +16,8 @@ class FakeCollection:
     def count(self):
         return len(self.rows)
 
-    def get(self, include):
-        rows = [self.rows[chunk_id] for chunk_id in self.rows]
+    def get(self, include, ids=None):
+        rows = [self.rows[chunk_id] for chunk_id in (ids or self.rows) if chunk_id in self.rows]
         return {
             "ids": [row["id"] for row in rows],
             "documents": [row["text"] for row in rows],
@@ -79,6 +80,15 @@ def collection():
     return FakeCollection(rows)
 
 
+def committed_snapshot(collection):
+    owners = {}
+    for chunk_id, row in collection.rows.items():
+        metadata = row["metadata"]
+        owner_id = metadata.get("document_id", metadata.get("file_hash"))
+        owners[chunk_id] = {"document_id": owner_id, "paths": [metadata["source"]]}
+    return CommittedSnapshot("snapshot-" + str(len(owners)), frozenset(owners), owners)
+
+
 class FakeEmbeddingModel:
     def encode(self, questions, **kwargs):
         class Embeddings(list):
@@ -89,7 +99,8 @@ class FakeEmbeddingModel:
 
 
 def test_bm25_returns_exact_academic_term_match(collection):
-    hits = retrieval._bm25_search("BGE-reranker-base", collection, candidate_count=3)
+    hits = retrieval._bm25_search("BGE-reranker-base", collection, candidate_count=3,
+                                  snapshot=committed_snapshot(collection))
 
     assert hits[0]["id"] == "chunk-a"
     assert hits[0]["bm25_score"] is not None
@@ -97,7 +108,8 @@ def test_bm25_returns_exact_academic_term_match(collection):
 
 
 def test_bm25_matches_components_of_hyphenated_terms(collection):
-    hits = retrieval._bm25_search("BGE reranker base", collection, candidate_count=3)
+    hits = retrieval._bm25_search("BGE reranker base", collection, candidate_count=3,
+                                  snapshot=committed_snapshot(collection))
 
     assert hits[0]["id"] == "chunk-a"
 
@@ -115,17 +127,21 @@ def test_bm25_breaks_equal_score_ties_by_chunk_id():
         }},
     ]
 
-    hits = retrieval._bm25_search("shared-term", FakeCollection(rows), 3)
+    collection = FakeCollection(rows)
+    hits = retrieval._bm25_search("shared-term", collection, 3,
+                                  snapshot=committed_snapshot(collection))
 
     assert [hit["id"] for hit in hits[:2]] == ["a", "z"]
 
 
 def test_bm25_index_is_reused_until_chroma_content_changes(collection):
-    first = retrieval._get_bm25_index(collection)[0]
-    assert retrieval._get_bm25_index(collection)[0] is first
+    snapshot = committed_snapshot(collection)
+    first = retrieval._get_bm25_index(collection, snapshot)[0]
+    assert retrieval._get_bm25_index(collection, snapshot)[0] is first
 
     collection.rows["chunk-a"]["text"] = "Changed document text after reingestion."
-    rebuilt = retrieval._get_bm25_index(collection)[0]
+    changed_snapshot = CommittedSnapshot("after-commit", snapshot.chunk_ids, snapshot.owners)
+    rebuilt = retrieval._get_bm25_index(collection, changed_snapshot)[0]
 
     assert rebuilt is not first
 
@@ -163,6 +179,7 @@ def test_dense_hybrid_and_hybrid_rerank_modes_preserve_metadata(
     monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
     monkeypatch.setattr(retrieval, "get_embedding_model", lambda: FakeEmbeddingModel())
     monkeypatch.setattr(retrieval, "get_index_config", lambda: __import__("src.index_config", fromlist=["IndexConfig"]).IndexConfig(embedding_dimension=2))
+    monkeypatch.setattr(retrieval, "_get_committed_snapshot", committed_snapshot)
     created = []
     monkeypatch.setenv("RERANK_CANDIDATES", "2")
     rerank_batch_sizes = []
@@ -232,8 +249,9 @@ def test_empty_collection_and_unmatched_bm25_query_return_no_results(monkeypatch
 
     for mode in retrieval.RETRIEVAL_MODES:
         assert retrieval.retrieve("anything", retrieval_mode=mode) == []
-    assert retrieval._bm25_search("anything", empty, 5) == []
-    assert retrieval._bm25_search("... !!!", empty, 5) == []
+    snapshot = committed_snapshot(empty)
+    assert retrieval._bm25_search("anything", empty, 5, snapshot) == []
+    assert retrieval._bm25_search("... !!!", empty, 5, snapshot) == []
 
 
 @pytest.mark.parametrize("name,value", [("RRF_K", "0"), ("DENSE_CANDIDATES", "bad")])
@@ -274,6 +292,7 @@ def test_generation_context_uses_retrieved_citation_metadata(collection, monkeyp
     monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
     monkeypatch.setattr(retrieval, "get_embedding_model", lambda: FakeEmbeddingModel())
     monkeypatch.setattr(retrieval, "get_index_config", lambda: __import__("src.index_config", fromlist=["IndexConfig"]).IndexConfig(embedding_dimension=2))
+    monkeypatch.setattr(retrieval, "_get_committed_snapshot", committed_snapshot)
     hit = retrieval.retrieve("RAG", top_k=1, retrieval_mode="dense")[0]
 
     context = build_context([hit])

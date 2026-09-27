@@ -77,27 +77,44 @@ def _corpus_fingerprint(ids: list[str], docs: list[str], metadatas: list[dict]) 
     return digest.hexdigest()
 
 
-def _get_bm25_index(collection):
-    """Reuse BM25 until Chroma's IDs, text, or citation metadata changes."""
+def _get_committed_snapshot(collection):
+    from src.sync import committed_snapshot
+
+    return committed_snapshot(collection_count=collection.count())
+
+
+def _get_bm25_index(collection, snapshot):
+    """Build BM25 only from committed IDs; cache by the committed manifest revision."""
     global _bm25_cache
 
-    stored = collection.get(include=["documents", "metadatas"])
+    collection_key = getattr(collection, "name", id(collection))
+    cache_key = (collection_key, snapshot.revision)
+    if _bm25_cache and _bm25_cache[0] == cache_key:
+        return _bm25_cache[1:]
+
+    if not snapshot.chunk_ids:
+        _bm25_cache = (cache_key, None, [], [])
+        return _bm25_cache[1:]
+
+    ids = sorted(snapshot.chunk_ids)
+    stored = collection.get(ids=ids, include=["documents", "metadatas"])
     ids = stored["ids"] or []
     docs = stored["documents"] or []
     metadatas = stored["metadatas"] or [{} for _ in ids]
-    fingerprint = _corpus_fingerprint(ids, docs, metadatas)
-    if _bm25_cache and _bm25_cache[0] == fingerprint:
-        return _bm25_cache[1:]
 
     from rank_bm25 import BM25Okapi
 
     records = []
     tokenized = []
     for chunk_id, text, metadata in zip(ids, docs, metadatas):
-        records.append(_make_result(chunk_id, text, metadata or {}))
+        owner = snapshot.owners.get(chunk_id)
+        metadata = metadata or {}
+        if owner is None or (metadata.get("document_id") and metadata["document_id"] != owner["document_id"]):
+            continue
+        records.append(_make_committed_result(chunk_id, text, metadata, owner))
         tokenized.append(_tokenize(text))
     index = BM25Okapi(tokenized) if any(tokenized) else None
-    _bm25_cache = (fingerprint, index, records, tokenized)
+    _bm25_cache = (cache_key, index, records, tokenized)
     return index, records, tokenized
 
 
@@ -119,7 +136,21 @@ def _make_result(chunk_id: str, text: str, metadata: dict) -> dict:
     }
 
 
-def _dense_search(question: str, collection, count: int, candidate_count: int) -> list[dict]:
+def _make_committed_result(chunk_id: str, text: str, metadata: dict, owner: dict) -> dict:
+    metadata = dict(metadata)
+    paths = owner.get("paths") or []
+    if paths:
+        metadata["source"] = paths[0]
+        metadata["source_paths"] = json.dumps(paths)
+    metadata["document_id"] = owner["document_id"]
+    result = _make_result(chunk_id, text, metadata)
+    return result
+
+
+def _dense_search(question: str, collection, count: int, candidate_count: int,
+                  snapshot) -> list[dict]:
+    if not snapshot.chunk_ids or candidate_count <= 0:
+        return []
     config = get_index_config()
     model = get_embedding_model()
     query_embedding = model.encode(
@@ -130,29 +161,40 @@ def _dense_search(question: str, collection, count: int, candidate_count: int) -
             f"Query embedding dimension {len(query_embedding[0])} does not match "
             f"index dimension {config.embedding_dimension}; rebuild or correct configuration."
         )
-    results = collection.query(
-        query_embeddings=query_embedding,
-        n_results=min(candidate_count, count),
-        include=["documents", "metadatas", "distances"],
-    )
+    target = min(candidate_count, len(snapshot.chunk_ids))
+    fetch = min(max(target, 1), count)
     hits = []
-    for chunk_id, text, metadata, distance in zip(
-        results["ids"][0], results["documents"][0],
-        results["metadatas"][0], results["distances"][0],
-    ):
-        hit = _make_result(chunk_id, text, metadata or {})
-        hit["distance"] = hit["dense_distance"] = float(distance)
-        hit["dense_score"] = -float(distance)
-        hits.append(hit)
+    while fetch:
+        results = collection.query(
+            query_embeddings=query_embedding,
+            n_results=fetch,
+            include=["documents", "metadatas", "distances"],
+        )
+        hits = []
+        for chunk_id, text, metadata, distance in zip(
+            results["ids"][0], results["documents"][0],
+            results["metadatas"][0], results["distances"][0],
+        ):
+            owner = snapshot.owners.get(chunk_id)
+            metadata = metadata or {}
+            if owner is None or (metadata.get("document_id") and metadata["document_id"] != owner["document_id"]):
+                continue
+            hit = _make_committed_result(chunk_id, text, metadata, owner)
+            hit["distance"] = hit["dense_distance"] = float(distance)
+            hit["dense_score"] = -float(distance)
+            hits.append(hit)
+        if len(hits) >= target or fetch >= count:
+            break
+        fetch = min(count, max(fetch + 1, fetch * 2))
     return sorted(hits, key=lambda hit: (hit["distance"], hit["id"]))
 
 
-def _bm25_search(question: str, collection, candidate_count: int) -> list[dict]:
+def _bm25_search(question: str, collection, candidate_count: int, snapshot) -> list[dict]:
     query_tokens = _tokenize(question)
     if not query_tokens:
         return []
 
-    index, records, tokenized = _get_bm25_index(collection)
+    index, records, tokenized = _get_bm25_index(collection, snapshot)
     if index is None:
         return []
 
@@ -236,8 +278,8 @@ def _rerank(question: str, candidates: list[dict], model_name: str) -> list[dict
     return results
 
 
-def retrieve(question: str, top_k: int | None = None,
-             retrieval_mode: str | None = None) -> list[dict]:
+def _retrieve_locked(question: str, top_k: int | None = None,
+                     retrieval_mode: str | None = None) -> list[dict]:
     """Return ranked Chroma chunks with citation metadata and method scores."""
     config = RetrievalConfig.from_env()
     top_k = config.final_results if top_k is None else top_k
@@ -252,14 +294,27 @@ def retrieve(question: str, top_k: int | None = None,
     if count == 0:
         return []
 
-    dense = _dense_search(question, collection, count, config.dense_candidates)
+    snapshot = _get_committed_snapshot(collection)
+    if not snapshot.chunk_ids:
+        return []
+
+    dense = _dense_search(question, collection, count, config.dense_candidates, snapshot)
     if mode == "dense":
         return dense[:top_k]
 
-    bm25 = _bm25_search(question, collection, config.bm25_candidates)
+    bm25 = _bm25_search(question, collection, config.bm25_candidates, snapshot)
     fused = reciprocal_rank_fusion(dense, bm25, k=config.rrf_k)
     if mode == "hybrid":
         return fused[:top_k]
 
     candidates = fused[:config.rerank_candidates]
     return _rerank(question, candidates, config.reranker_model)[:top_k]
+
+
+def retrieve(question: str, top_k: int | None = None,
+             retrieval_mode: str | None = None) -> list[dict]:
+    """Search a consistent committed manifest snapshot in every retrieval mode."""
+    from src.sync import INDEX_LOCK
+
+    with INDEX_LOCK:
+        return _retrieve_locked(question, top_k=top_k, retrieval_mode=retrieval_mode)

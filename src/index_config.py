@@ -177,4 +177,5 @@ def new_metadata(config: IndexConfig, *, status: str = "ready", previous: dict |
         "last_successful_update_at": now,
         "status": status,
         "active_collection": (previous or {}).get("active_collection", "papers"),
+        "manifest_name": (previous or {}).get("manifest_name", "documents.json"),
     }
