@@ -1,13 +1,17 @@
 import argparse
 import sys
 import time
+import uuid
+import os
+from pathlib import Path
 
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
 from src.generate import generate_answer
-from src.ingest import ingest_folder, reingest_folder
+from src.ingest import ingest_folder, reingest_folder, get_index_config, index_status, active_collection_name, DB_DIR
+from src.index_config import IndexCompatibilityError, new_metadata, read_metadata, write_metadata
 from src.retrieve import RETRIEVAL_MODES, RetrievalConfig, retrieve
 from src.sync import SyncError, sync_library
 
@@ -24,7 +28,7 @@ def sync_main(argv=None):
     try:
         with console.status("[bold cyan]Scanning paper library...[/bold cyan]"):
             plan = sync_library(args.papers, dry_run=args.dry_run, force=args.force)
-    except SyncError as exc:
+    except (SyncError, IndexCompatibilityError) as exc:
         console.print(f"[red]Synchronization stopped:[/red] {exc}")
         return 1
 
@@ -50,6 +54,8 @@ def sync_main(argv=None):
 
 
 def main():
+    if len(sys.argv) > 1 and sys.argv[1] == "index":
+        return index_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         return sync_main(sys.argv[2:])
 
@@ -101,7 +107,7 @@ def main():
                 reingest_folder(args.papers)
             else:
                 ingest_folder(args.papers)
-        except SyncError as exc:
+        except (SyncError, IndexCompatibilityError) as exc:
             console.print(f"[red]Synchronization stopped:[/red] {exc}")
             return 1
 
@@ -133,10 +139,14 @@ def main():
                 console.print(f"    {result['text'][:400].strip()}\n")
         return
 
-    with console.status("[bold cyan]Retrieving relevant excerpts...[/bold cyan]"):
-        chunks = retrieve(
-            args.question, top_k=args.top_k, retrieval_mode=args.retrieval
-        )
+    try:
+        with console.status("[bold cyan]Retrieving relevant excerpts...[/bold cyan]"):
+            chunks = retrieve(
+                args.question, top_k=args.top_k, retrieval_mode=args.retrieval
+            )
+    except IndexCompatibilityError as exc:
+        console.print(f"[red]Index cannot be used safely:[/red] {exc}")
+        return 1
 
     if not chunks:
         console.print("[yellow]No relevant excerpts found. Have you added PDFs to the papers folder?[/yellow]")
@@ -170,6 +180,104 @@ def main():
         if not result.validation.references_valid:
             console.print("Original generated response:")
             console.print(result.original_answer)
+
+
+def index_main(argv=None):
+    parser = argparse.ArgumentParser(description="Inspect and manage the versioned search index.")
+    parser.add_argument("action", choices=("info", "check", "rebuild"))
+    parser.add_argument("--papers", default="papers", help="Paper library directory")
+    parser.add_argument("--embedding-model")
+    parser.add_argument("--embedding-revision")
+    parser.add_argument("--embedding-dimension", type=int)
+    parser.add_argument("--chunk-size", type=int)
+    parser.add_argument("--chunk-overlap", type=int)
+    parser.add_argument("--normalize-embeddings", action=argparse.BooleanOptionalAction, default=None)
+    args = parser.parse_args(argv)
+    try:
+        if args.action == "rebuild":
+            for env_name, value in (
+                ("SCHOLARQ_EMBEDDING_MODEL", args.embedding_model),
+                ("SCHOLARQ_EMBEDDING_REVISION", args.embedding_revision),
+                ("SCHOLARQ_EMBEDDING_DIMENSION", args.embedding_dimension),
+                ("SCHOLARQ_CHUNK_SIZE", args.chunk_size),
+                ("SCHOLARQ_CHUNK_OVERLAP", args.chunk_overlap),
+                ("SCHOLARQ_NORMALIZE_EMBEDDINGS", args.normalize_embeddings),
+            ):
+                if value is not None:
+                    os.environ[env_name] = str(value).lower() if isinstance(value, bool) else str(value)
+        config = get_index_config()
+        if args.action == "info":
+            metadata = read_metadata(DB_DIR)
+            try:
+                status, metadata, count = index_status(config=config)
+            except IndexCompatibilityError as exc:
+                status, count = exc.status, 0
+                try:
+                    import chromadb
+                    client = chromadb.PersistentClient(path=DB_DIR)
+                    count = client.get_collection(active_collection_name()).count()
+                except Exception:
+                    pass
+            console.print(f"Status: {status}\nActive collection: {active_collection_name()}\nChunks: {count}")
+            console.print("Effective configuration:")
+            console.print_json(data=config.canonical())
+            console.print(f"Effective fingerprint: {config.fingerprint}")
+            console.print("Stored metadata:")
+            console.print_json(data=metadata or {"status": "missing"})
+            return 0
+        if args.action == "check":
+            status, metadata, count = index_status(config=config)
+            console.print(f"Index {status}: {count} chunks; fingerprint {config.fingerprint}")
+            return 0
+        old = read_metadata(DB_DIR)
+        console.print("[bold]Rebuilding index[/bold]")
+        console.print(f"Reason: {(old or {}).get('configuration_fingerprint', 'legacy or missing')} -> {config.fingerprint}")
+        old_config = (old or {}).get("configuration", {})
+        differences = [
+            f"{key}: {old_config.get(key)!r} -> {value!r}"
+            for key, value in config.canonical().items()
+            if key in old_config and old_config.get(key) != value
+        ]
+        if differences:
+            console.print("Reindex required because:")
+            for difference in differences:
+                console.print(f"  • {difference}")
+        console.print("Old configuration:")
+        console.print_json(data=(old or {}).get("configuration", {"status": "legacy or missing"}))
+        console.print("New configuration:")
+        console.print_json(data=config.canonical())
+        staging = f"papers_staging_{uuid.uuid4().hex[:12]}"
+        manifest = Path(DB_DIR) / "documents.json"
+        previous_manifest = manifest.read_bytes() if manifest.exists() else None
+        try:
+            result = sync_library(args.papers, force=True, reindex=True, collection_name=staging)
+            if result.failures:
+                raise RuntimeError("; ".join(result.failures))
+            import chromadb
+            client = chromadb.PersistentClient(path=DB_DIR)
+            replacement = client.get_collection(staging)
+            count = replacement.count()
+            if count != sum(item.get("chunk_count", 0) for item in result.manifest["documents"].values()):
+                raise RuntimeError("Staging collection chunk count does not match the synchronized manifest")
+            if count:
+                sample = replacement.get(limit=1, include=["embeddings"])
+                if len(sample["embeddings"][0]) != config.embedding_dimension:
+                    raise RuntimeError("Staging collection embedding dimension does not match configuration")
+            metadata = new_metadata(config, previous=old)
+            metadata["active_collection"] = staging
+            write_metadata(DB_DIR, metadata)
+            retrieve._bm25_cache = None
+            console.print(f"[green]Activated replacement index {staging} ({count} chunks).[/green]")
+            return 0
+        except Exception:
+            if previous_manifest is None:
+                manifest.unlink(missing_ok=True)
+            else:
+                manifest.write_bytes(previous_manifest)
+            raise
+    except (ValueError, IndexCompatibilityError, SyncError, RuntimeError, OSError) as exc:
+        console.print(f"[red]Index operation failed:[/red] {exc}")
+        return 1
 
 
 if __name__ == "__main__":

@@ -3,17 +3,47 @@ import re
 from pathlib import Path
 
 from rich.console import Console
+from src.index_config import (IndexCompatibilityError, check_compatibility,
+                              load_index_config, read_metadata)
 
 console = Console()
 
-EMBED_MODEL_NAME = "BAAI/bge-small-en-v1.5"
-CHUNK_SIZE = 800
-CHUNK_OVERLAP = 150
 DB_DIR = "chroma_db"
 COLLECTION_NAME = "papers"
 MANIFEST_NAME = "documents.json"
-INDEX_VERSION = f"{EMBED_MODEL_NAME}:chunks-{CHUNK_SIZE}-{CHUNK_OVERLAP}:v1"
 _embedding_model = None
+_embedding_model_key = None
+
+
+def get_index_config(**overrides):
+    return load_index_config(overrides=overrides)
+
+
+def active_collection_name():
+    metadata = read_metadata(DB_DIR)
+    return (metadata or {}).get("active_collection", COLLECTION_NAME)
+
+
+def index_status(*, config=None):
+    config = config or get_index_config()
+    metadata = read_metadata(DB_DIR)
+    count = 0
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=DB_DIR)
+        names = [getattr(item, "name", item) for item in client.list_collections()]
+        name = (metadata or {}).get("active_collection", COLLECTION_NAME)
+        if name not in names and metadata is not None:
+            raise IndexCompatibilityError("incomplete or corrupted", f"Active Chroma collection {name!r} is missing.")
+        if name in names:
+            count = client.get_collection(name).count()
+    except IndexCompatibilityError:
+        raise
+    except Exception:
+        if metadata is not None:
+            raise IndexCompatibilityError("incomplete or corrupted", "Cannot inspect the active Chroma collection.")
+    status = check_compatibility(config, metadata, collection_count=count)
+    return status, metadata, count
 
 
 def file_hash(path: Path) -> str:
@@ -27,11 +57,20 @@ def file_hash(path: Path) -> str:
 
 def get_embedding_model():
     """Load and cache the local embedding model on first use."""
-    global _embedding_model
-    if _embedding_model is None:
+    global _embedding_model, _embedding_model_key
+    config = get_index_config()
+    key = (config.embedding_model, config.embedding_revision)
+    if _embedding_model is None or _embedding_model_key != key:
         from sentence_transformers import SentenceTransformer
-
-        _embedding_model = SentenceTransformer(EMBED_MODEL_NAME)
+        kwargs = {"revision": config.embedding_revision} if config.embedding_revision else {}
+        _embedding_model = SentenceTransformer(config.embedding_model, **kwargs)
+        actual_dimension = _embedding_model.get_sentence_embedding_dimension()
+        if actual_dimension != config.embedding_dimension:
+            raise IndexCompatibilityError(
+                "configuration mismatch",
+                f"Embedding model {config.embedding_model!r} returns dimension {actual_dimension}; configured dimension is {config.embedding_dimension}.",
+            )
+        _embedding_model_key = key
     return _embedding_model
 
 
@@ -70,9 +109,12 @@ def extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
             return pages
 
 
-def chunk_sections(text: str, size: int = CHUNK_SIZE,
-                   overlap: int = CHUNK_OVERLAP) -> list[tuple[str, str]]:
+def chunk_sections(text: str, size: int | None = None,
+                   overlap: int | None = None) -> list[tuple[str, str]]:
     """Chunk Markdown by heading sections, returning (section, chunk) pairs."""
+    config = get_index_config()
+    size = config.chunk_size if size is None else size
+    overlap = config.chunk_overlap if overlap is None else overlap
     if size <= 0:
         raise ValueError("size must be greater than zero")
     if overlap < 0 or overlap >= size:
@@ -129,8 +171,8 @@ def chunk_sections(text: str, size: int = CHUNK_SIZE,
     return chunks
 
 
-def chunk_text(text: str, size: int = CHUNK_SIZE,
-               overlap: int = CHUNK_OVERLAP) -> list[str]:
+def chunk_text(text: str, size: int | None = None,
+               overlap: int | None = None) -> list[str]:
     """Compatibility helper returning heading-aware Markdown chunks."""
     return [chunk for _, chunk in chunk_sections(text, size, overlap)]
 
@@ -152,7 +194,27 @@ def get_collection():
     import chromadb
 
     client = chromadb.PersistentClient(path=DB_DIR)
-    return client.get_or_create_collection(COLLECTION_NAME)
+    name = active_collection_name()
+    metadata = read_metadata(DB_DIR)
+    names = [getattr(item, "name", item) for item in client.list_collections()]
+    if name in names:
+        collection = client.get_collection(name)
+    elif metadata is not None:
+        raise IndexCompatibilityError("incomplete or corrupted", f"Active Chroma collection {name!r} is missing.")
+    else:
+        collection = client.get_or_create_collection(name)
+    config = get_index_config()
+    count = collection.count()
+    check_compatibility(config, metadata, collection_count=count)
+    if count:
+        try:
+            sample = collection.get(limit=1, include=["embeddings"])
+            dimension = len(sample["embeddings"][0])
+        except Exception as exc:
+            raise IndexCompatibilityError("incomplete or corrupted", f"Cannot validate stored embedding dimension: {exc}") from exc
+        if dimension != config.embedding_dimension:
+            raise IndexCompatibilityError("configuration mismatch", f"Stored collection dimension {dimension} does not match configured dimension {config.embedding_dimension}.")
+    return collection
 
 
 def ingest_folder(papers_dir: str = "papers"):

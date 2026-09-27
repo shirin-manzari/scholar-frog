@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src import ingest
+from src.index_config import new_metadata, read_metadata, write_metadata
 
 
 class SyncError(RuntimeError):
@@ -80,7 +81,7 @@ def _scan(root: Path) -> list[dict]:
     return sorted(found, key=lambda x: x["path"].casefold())
 
 
-def _read_index(dry_run: bool) -> dict:
+def _read_index(dry_run: bool, collection_name: str | None = None) -> dict:
     empty = {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
     if dry_run and not Path(ingest.DB_DIR).exists():
         return empty
@@ -90,11 +91,17 @@ def _read_index(dry_run: bool) -> dict:
             client = chromadb.PersistentClient(path=ingest.DB_DIR)
             names = client.list_collections()
             names = [getattr(item, "name", item) for item in names]
-            if ingest.COLLECTION_NAME not in names:
+            name = collection_name or ingest.active_collection_name()
+            if name not in names:
                 return empty
-            collection = client.get_collection(ingest.COLLECTION_NAME)
+            collection = client.get_collection(name)
         else:
-            collection = ingest.get_collection()
+            if collection_name:
+                import chromadb
+                client = chromadb.PersistentClient(path=ingest.DB_DIR)
+                collection = client.get_or_create_collection(collection_name)
+            else:
+                collection = ingest.get_collection()
         return collection.get(include=["documents", "metadatas"])
     except Exception as exc:
         raise SyncError(f"Cannot read existing Chroma index: {exc}") from exc
@@ -132,11 +139,11 @@ def _group_records(stored: dict, files: list[dict]) -> dict[str, list[dict]]:
 
 
 def plan_sync(papers_dir: str = "papers", *, dry_run: bool = False,
-              reindex: bool = False) -> SyncPlan:
+              reindex: bool = False, collection_name: str | None = None) -> SyncPlan:
     root = Path(papers_dir).expanduser().resolve()
     files = _scan(root)
     manifest = _read_manifest()
-    stored = _read_index(dry_run)
+    stored = _read_index(dry_run, collection_name)
     groups = _group_records(stored, files)
     old = manifest["documents"]
     by_hash: dict[str, list[dict]] = {}
@@ -177,7 +184,7 @@ def plan_sync(papers_dir: str = "papers", *, dry_run: bool = False,
         elif digest in pending or reindex or entry.get("status") == "stale" or (
             not records and not is_empty_entry
         ) or not ids_match or (
-            entry and entry.get("index_version") != ingest.INDEX_VERSION
+            entry and entry.get("configuration_fingerprint") != ingest.get_index_config().fingerprint
         ):
             plan.modified += 1
             plan.prepare_hashes.add(digest)
@@ -238,9 +245,13 @@ def _prepare(item: dict, digest: str, paths: list[str]) -> dict:
             })
     vectors = []
     if documents:
+        config = ingest.get_index_config()
         vectors = ingest.get_embedding_model().encode(
-            documents, show_progress_bar=False, normalize_embeddings=True
+            documents, show_progress_bar=False,
+            normalize_embeddings=config.normalize_embeddings
         ).tolist()
+        if any(len(vector) != config.embedding_dimension for vector in vectors):
+            raise ValueError(f"Embedding model returned dimension {len(vectors[0])}; expected {config.embedding_dimension}")
     return {"ids": ids, "documents": documents, "metadatas": metadatas,
             "embeddings": vectors}
 
@@ -275,8 +286,10 @@ def _delete_threshold() -> float:
 
 
 def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
-                 force: bool = False, reindex: bool = False) -> SyncPlan:
-    plan = plan_sync(papers_dir, dry_run=dry_run, reindex=reindex)
+                 force: bool = False, reindex: bool = False,
+                 collection_name: str | None = None) -> SyncPlan:
+    plan = plan_sync(papers_dir, dry_run=dry_run, reindex=reindex,
+                     collection_name=collection_name)
     if dry_run:
         return plan
 
@@ -290,7 +303,11 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
             "Review the library and rerun with --force to confirm."
         )
 
-    collection = ingest.get_collection()
+    if collection_name:
+        import chromadb
+        collection = chromadb.PersistentClient(path=ingest.DB_DIR).get_or_create_collection(collection_name)
+    else:
+        collection = ingest.get_collection()
     old_groups = _group_records(plan.stored, plan.files)
     by_hash: dict[str, list[dict]] = {}
     for item in plan.files:
@@ -319,7 +336,7 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
     if prepared:
         try:
             _write_manifest({
-                "version": 1, "index_version": ingest.INDEX_VERSION,
+                "version": 1, "index_version": ingest.get_index_config().fingerprint,
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "documents": plan.manifest["documents"], "pending": pending,
             })
@@ -426,8 +443,9 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
             "updated_at": timestamp, "chunk_count": len(chunk_ids),
             "chunk_ids": chunk_ids,
             "status": "stale" if digest in stale_hashes else ("indexed" if chunk_ids else "empty"),
-            "index_version": previous.get("index_version", ingest.INDEX_VERSION)
-            if digest in stale_hashes else ingest.INDEX_VERSION,
+            "index_version": previous.get("index_version", ingest.get_index_config().fingerprint)
+            if digest in stale_hashes else ingest.get_index_config().fingerprint,
+            "configuration_fingerprint": ingest.get_index_config().fingerprint,
         }
 
     obsolete = set(old_groups) - active
@@ -445,13 +463,20 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
     pending = {digest: details for digest, details in pending.items()
                if digest not in current and digest in by_hash}
     manifest = {
-        "version": 1, "index_version": ingest.INDEX_VERSION,
+        "version": 1, "index_version": ingest.get_index_config().fingerprint,
         "updated_at": timestamp, "documents": next_documents, "pending": pending,
     }
     try:
         _write_manifest(manifest)
     except OSError as exc:
         raise SyncError(f"Index updated but manifest write failed: {exc}") from exc
+
+    if not plan.failures and not collection_name:
+        previous_meta = read_metadata(ingest.DB_DIR)
+        metadata = new_metadata(ingest.get_index_config(), previous=previous_meta)
+        if previous_meta:
+            metadata["active_collection"] = previous_meta.get("active_collection", ingest.COLLECTION_NAME)
+        write_metadata(ingest.DB_DIR, metadata)
 
     if prepared or obsolete or metadata_changed:
         try:

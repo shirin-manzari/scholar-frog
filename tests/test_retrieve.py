@@ -162,6 +162,7 @@ def test_dense_hybrid_and_hybrid_rerank_modes_preserve_metadata(
 ):
     monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
     monkeypatch.setattr(retrieval, "get_embedding_model", lambda: FakeEmbeddingModel())
+    monkeypatch.setattr(retrieval, "get_index_config", lambda: __import__("src.index_config", fromlist=["IndexConfig"]).IndexConfig(embedding_dimension=2))
     created = []
     monkeypatch.setenv("RERANK_CANDIDATES", "2")
     rerank_batch_sizes = []
@@ -272,6 +273,7 @@ def test_candidate_counts_and_final_results_are_configurable(monkeypatch):
 def test_generation_context_uses_retrieved_citation_metadata(collection, monkeypatch):
     monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
     monkeypatch.setattr(retrieval, "get_embedding_model", lambda: FakeEmbeddingModel())
+    monkeypatch.setattr(retrieval, "get_index_config", lambda: __import__("src.index_config", fromlist=["IndexConfig"]).IndexConfig(embedding_dimension=2))
     hit = retrieval.retrieve("RAG", top_k=1, retrieval_mode="dense")[0]
 
     context = build_context([hit])

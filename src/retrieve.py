@@ -6,7 +6,7 @@ from dataclasses import dataclass
 
 from dotenv import load_dotenv
 
-from src.ingest import get_collection, get_embedding_model
+from src.ingest import get_collection, get_embedding_model, get_index_config
 
 load_dotenv()
 
@@ -120,8 +120,16 @@ def _make_result(chunk_id: str, text: str, metadata: dict) -> dict:
 
 
 def _dense_search(question: str, collection, count: int, candidate_count: int) -> list[dict]:
+    config = get_index_config()
     model = get_embedding_model()
-    query_embedding = model.encode([question], normalize_embeddings=True).tolist()
+    query_embedding = model.encode(
+        [question], normalize_embeddings=config.normalize_embeddings
+    ).tolist()
+    if len(query_embedding[0]) != config.embedding_dimension:
+        raise ValueError(
+            f"Query embedding dimension {len(query_embedding[0])} does not match "
+            f"index dimension {config.embedding_dimension}; rebuild or correct configuration."
+        )
     results = collection.query(
         query_embeddings=query_embedding,
         n_results=min(candidate_count, count),

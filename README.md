@@ -92,3 +92,33 @@ keyword search, then reranks the results. Use `--retrieval dense` or
 `--retrieval hybrid` to choose another mode. `--top-k` changes how many
 passages are retrieved. See `.env.example` for candidate counts and model
 settings.
+# Versioned index configuration
+
+ScholarQ records the indexing configuration used to create the active ChromaDB collection in `chroma_db/index_metadata.json`. The default settings preserve the original index behavior:
+
+| Setting | Default |
+| --- | --- |
+| `embedding_model` | `BAAI/bge-small-en-v1.5` |
+| `embedding_revision` | unset (model repository default; set a commit to pin it) |
+| `embedding_dimension` | `384` |
+| `normalize_embeddings` | `true` |
+| `chunk_size` | `800` |
+| `chunk_overlap` | `150` |
+| `chunking_strategy` | `markdown-heading-paragraph` |
+
+Copy `scholarq.toml.example` to `scholarq.toml` to configure the index. Implementation versions for chunking and PDF text extraction are maintained by ScholarQ and are included in the fingerprint. Settings are read in this order: built-in defaults, `[index]` values in `scholarq.toml`, `SCHOLARQ_*` environment variables, then explicit command-line overrides (where offered). The fingerprint includes only settings that affect indexed text or vectors; retrieval mode, BM25, reranking and generation settings do not trigger reindexing.
+
+Before retrieval or synchronization, ScholarQ compares the active settings with the stored fingerprint and schema version. A mismatch stops use of the index with an explanation; ordinary questions never trigger an automatic rebuild. Inspect it with:
+
+```bash
+python ask.py index info
+python ask.py index check
+```
+
+Rebuild into a separate staging collection, verify its chunks and vectors, and activate it only after success:
+
+```bash
+python ask.py index rebuild --papers papers
+```
+
+The prior collection is retained. An interrupted or failed rebuild leaves it active; an unused staging collection may remain and is ignored. PDF files are never modified. Existing collections with no version metadata are treated as legacy and are not silently adopted because their exact model revision and extraction behavior cannot be established. Rebuild them explicitly; the old collection is retained after activation. Document synchronization stores the configuration fingerprint per document and avoids re-embedding unchanged PDFs when both their content and index configuration match. BM25 is rebuilt from the active Chroma collection and its cache is invalidated after activation.
