@@ -6,6 +6,7 @@ import pytest
 import src.ingest as ingest
 import src.retrieve as retrieve
 import src.sync as sync
+from src.index_config import check_compatibility, load_index_config, read_metadata
 
 
 class MemoryCollection:
@@ -54,7 +55,7 @@ def library(tmp_path, monkeypatch):
     def fake_prepare(item, digest, paths):
         prepared.append((digest, tuple(paths)))
         text = item["absolute"].read_text()
-        if text == "FAIL":
+        if text.startswith("FAIL"):
             raise ValueError("mock extraction failed")
         if text == "EMPTY":
             return {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
@@ -155,13 +156,102 @@ def test_failed_replacement_keeps_previous_index_as_stale(library):
 
 
 def test_failed_new_document_does_not_stop_other_additions(library):
-    root, _, collection, _ = library
+    root, db, collection, prepared = library
     add_pdf(root, "bad.pdf", "FAIL")
     add_pdf(root, "good.pdf", "ok")
     result = sync.sync_library(str(root))
     assert len(result.failures) == 1
+    assert result.succeeded == 1
     assert len(collection.rows) == 1
     assert next(iter(collection.rows.values()))["metadata"]["source"] == "good.pdf"
+    manifest = json.loads(sync.manifest_path().read_text())
+    assert len(manifest["documents"]) == 1
+    metadata = read_metadata(db)
+    assert metadata["status"] == "ready"
+    assert check_compatibility(load_index_config(), metadata, collection_count=1) == "compatible"
+    assert len(prepared) == 2
+
+
+def test_sync_cli_reports_partial_success_and_returns_nonzero(library, capsys):
+    import ask
+
+    root, _, _, _ = library
+    add_pdf(root, "bad.pdf", "FAIL")
+    add_pdf(root, "good.pdf", "ok")
+
+    exit_code = ask.sync_main(["--papers", str(root)])
+    output = capsys.readouterr().out
+
+    assert exit_code == 1
+    assert "Successfully indexed" in output and "1" in output
+    assert "Failed" in output
+    assert "mock extraction failed" in output
+
+
+def test_partial_ingestion_retries_only_the_failed_pdf(library):
+    root, db, collection, prepared = library
+    add_pdf(root, "bad.pdf", "FAIL")
+    add_pdf(root, "good.pdf", "already indexed")
+    first = sync.sync_library(str(root))
+    assert first.failures and first.succeeded == 1
+    first_metadata = read_metadata(db)
+    assert len(prepared) == 2
+
+    (root / "bad.pdf").write_text("fixed")
+    second = sync.sync_library(str(root))
+    assert not second.failures and second.succeeded == 1
+    assert len(prepared) == 3
+    assert len(collection.rows) == 2
+    assert set(read_metadata(db)["configuration"].items()) == set(first_metadata["configuration"].items())
+    assert len(second.manifest["documents"]) == 2
+
+
+def test_all_initial_documents_failing_does_not_create_ready_metadata(library):
+    root, db, collection, _ = library
+    add_pdf(root, "bad-a.pdf", "FAIL A")
+    add_pdf(root, "bad-b.pdf", "FAIL B")
+
+    result = sync.sync_library(str(root))
+
+    assert len(result.failures) == 2
+    assert result.succeeded == 0
+    assert not collection.rows
+    assert not (db / "index_metadata.json").exists()
+    assert read_metadata(db) is None
+    assert json.loads(sync.manifest_path().read_text())["documents"] == {}
+
+
+def test_existing_ready_index_remains_compatible_after_partial_sync(library):
+    root, db, collection, _ = library
+    add_pdf(root, "existing.pdf", "existing")
+    sync.sync_library(str(root))
+    previous = read_metadata(db)
+    add_pdf(root, "bad.pdf", "FAIL")
+    add_pdf(root, "new.pdf", "new evidence")
+
+    result = sync.sync_library(str(root))
+
+    assert result.failures and result.succeeded == 1
+    assert len(collection.rows) == 2
+    current = read_metadata(db)
+    assert current["active_collection"] == previous["active_collection"]
+    assert check_compatibility(load_index_config(), current, collection_count=2) == "compatible"
+    assert current["last_successful_update_at"] != previous["last_successful_update_at"]
+    manifest = json.loads(sync.manifest_path().read_text())
+    assert len(manifest["documents"]) == 2
+
+
+def test_all_failed_new_documents_do_not_rewrite_existing_metadata(library):
+    root, db, _, _ = library
+    add_pdf(root, "existing.pdf", "existing")
+    sync.sync_library(str(root))
+    before = (db / "index_metadata.json").read_bytes()
+    add_pdf(root, "bad.pdf", "FAIL")
+
+    result = sync.sync_library(str(root))
+
+    assert result.failures and result.succeeded == 0
+    assert (db / "index_metadata.json").read_bytes() == before
 
 
 def test_dry_run_has_no_manifest_or_index_mutations(library):
@@ -212,6 +302,26 @@ def test_manifest_failure_before_index_write_is_safe(library, monkeypatch):
     recovered = sync.sync_library(str(root))
     assert recovered.added == 1
     assert len(prepared) == 2
+
+
+def test_final_manifest_failure_does_not_mark_new_index_ready(library, monkeypatch):
+    root, db, collection, _ = library
+    add_pdf(root, "a.pdf", "content")
+    original_write = sync._write_manifest
+    calls = 0
+
+    def fail_final_write(data):
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            raise OSError("disk full")
+        return original_write(data)
+
+    monkeypatch.setattr(sync, "_write_manifest", fail_final_write)
+    with pytest.raises(sync.SyncError, match="manifest write failed"):
+        sync.sync_library(str(root))
+    assert collection.rows
+    assert read_metadata(db) is None
 
 
 def test_partial_chroma_insert_is_retried_from_pending_marker(library):

@@ -7,7 +7,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src import ingest
-from src.index_config import new_metadata, read_metadata, write_metadata
+from src.index_config import (IndexCompatibilityError, check_compatibility,
+                              new_metadata, read_metadata, write_metadata)
 
 
 class SyncError(RuntimeError):
@@ -27,6 +28,7 @@ class SyncPlan:
     deleted: int = 0
     unchanged: int = 0
     duplicated: int = 0
+    succeeded: int = 0
     failures: list[str] = field(default_factory=list)
     prepare_hashes: set[str] = field(default_factory=set)
 
@@ -449,9 +451,11 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
         }
 
     obsolete = set(old_groups) - active
+    deleted_successfully = False
     for digest in sorted(obsolete):
         try:
             collection.delete(ids=[row["id"] for row in old_groups[digest]])
+            deleted_successfully = True
         except Exception as exc:
             plan.failures.append(f"Could not remove obsolete document {digest[:12]}: {exc}")
             old_entry = plan.manifest["documents"].get(digest, {})
@@ -471,12 +475,29 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
     except OSError as exc:
         raise SyncError(f"Index updated but manifest write failed: {exc}") from exc
 
-    if not plan.failures and not collection_name:
-        previous_meta = read_metadata(ingest.DB_DIR)
-        metadata = new_metadata(ingest.get_index_config(), previous=previous_meta)
-        if previous_meta:
-            metadata["active_collection"] = previous_meta.get("active_collection", ingest.COLLECTION_NAME)
-        write_metadata(ingest.DB_DIR, metadata)
+    successfully_prepared = set(prepared) & set(current)
+    plan.succeeded = len(successfully_prepared)
+    index_changed = bool(successfully_prepared or deleted_successfully or metadata_changed)
+    if not collection_name:
+        try:
+            previous_meta = read_metadata(ingest.DB_DIR)
+            if previous_meta is not None:
+                check_compatibility(ingest.get_index_config(), previous_meta)
+            # `ready` means the manifest and version metadata describe a usable,
+            # committed index. Other PDFs may still have recoverable failures.
+            should_write = (
+                (previous_meta is None and bool(successfully_prepared))
+                or (previous_meta is not None and index_changed)
+            )
+            if should_write:
+                write_metadata(
+                    ingest.DB_DIR,
+                    new_metadata(ingest.get_index_config(), previous=previous_meta),
+                )
+        except (OSError, IndexCompatibilityError) as exc:
+            raise SyncError(
+                f"Index content and manifest were committed, but version metadata could not be safely updated: {exc}"
+            ) from exc
 
     if prepared or obsolete or metadata_changed:
         try:

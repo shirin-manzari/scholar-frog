@@ -96,6 +96,8 @@ settings.
 
 ScholarQ records the indexing configuration used to create the active ChromaDB collection in `chroma_db/index_metadata.json`. The default settings preserve the original index behavior:
 
+An index marked `ready` has version metadata and a persisted manifest describing its committed contents. A synchronization can still report failed PDFs while the successfully committed documents remain usable; failures remain retryable on the next sync.
+
 | Setting | Default |
 | --- | --- |
 | `embedding_model` | `BAAI/bge-small-en-v1.5` |

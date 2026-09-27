@@ -35,6 +35,7 @@ def sync_main(argv=None):
     title = "Library synchronization preview" if args.dry_run else "Library synchronization"
     console.print(f"\n[bold]{title}[/bold]")
     for label, count in (
+        ("Successfully indexed", plan.succeeded),
         ("Added", plan.added), ("Modified", plan.modified), ("Renamed", plan.renamed),
         ("Deleted", plan.deleted), ("Unchanged", plan.unchanged),
         ("Duplicate copies", plan.duplicated), ("Failed", len(plan.failures)),
