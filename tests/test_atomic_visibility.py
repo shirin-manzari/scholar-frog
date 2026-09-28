@@ -179,7 +179,7 @@ def test_recovery_commits_all_chunks_then_clears_pending_and_invalidates_bm25(ha
     committed_ids = manifest["documents"][next(iter(manifest["documents"]))]["chunk_ids"]
     assert result.succeeded == 1
     assert manifest["pending"] == {}
-    assert set(committed_ids).isdisjoint(pending_ids)
+    assert committed_ids == pending_ids
     assert set(collection.rows) == set(committed_ids)
     for mode in retrieve.RETRIEVAL_MODES:
         hits = _visible(harness, mode)

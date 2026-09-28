@@ -13,7 +13,8 @@ from src.generate import generate_answer
 from src.ingest import ingest_folder, reingest_folder, get_index_config, index_status, active_collection_name, DB_DIR
 from src.index_config import IndexCompatibilityError, new_metadata, read_metadata, write_metadata
 from src.retrieve import RETRIEVAL_MODES, RetrievalConfig, retrieve
-from src.sync import INDEX_LOCK, SyncError, manifest_path as sync_manifest_path, sync_library
+from src.sync import (INDEX_LOCK, SyncError, _read_manifest,
+                      manifest_path as sync_manifest_path, sync_library)
 
 console = Console()
 
@@ -227,6 +228,28 @@ def index_main(argv=None):
                 except Exception:
                     pass
             console.print(f"Status: {status}\nActive collection: {active_collection_name()}\nChunks: {count}")
+            try:
+                manifest = _read_manifest()
+                committed = sum(
+                    1 for entry in manifest.get("documents", {}).values()
+                    if entry.get("status") in {"indexed", "stale"}
+                )
+                pending_count = len(manifest.get("pending", {}))
+            except Exception:
+                committed, pending_count = 0, 0
+            recovery_possible = status == "recoverable_pending_initial"
+            blocked_reason = (
+                "initial indexing is incomplete; run `python ask.py sync` to recover"
+                if recovery_possible else
+                ("index metadata is missing or incompatible" if status != "ready" and status != "compatible"
+                 else "none")
+            )
+            console.print(
+                f"Committed documents: {committed}\nPending document versions: {pending_count}\n"
+                f"Recovery possible: {'yes' if recovery_possible else 'no'}\n"
+                f"Retrieval blocked because: {blocked_reason}\n"
+                f"Configuration compatibility: {'compatible' if status in {'ready', 'compatible'} else status}"
+            )
             console.print("Effective configuration:")
             console.print_json(data=config.canonical())
             console.print(f"Effective fingerprint: {config.fingerprint}")

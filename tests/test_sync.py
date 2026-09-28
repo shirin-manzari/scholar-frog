@@ -6,7 +6,8 @@ import pytest
 import src.ingest as ingest
 import src.retrieve as retrieve
 import src.sync as sync
-from src.index_config import check_compatibility, load_index_config, read_metadata
+from src.index_config import (IndexCompatibilityError, check_compatibility,
+                              load_index_config, read_metadata, write_metadata)
 
 
 class MemoryCollection:
@@ -304,6 +305,29 @@ def test_manifest_failure_before_index_write_is_safe(library, monkeypatch):
     assert len(prepared) == 2
 
 
+def test_initial_index_metadata_failure_keeps_recovery_marker_until_finalized(library, monkeypatch):
+    root, db, collection, _ = library
+    add_pdf(root, "a.pdf", "recover metadata finalization")
+    monkeypatch.setattr(
+        sync, "write_metadata",
+        lambda *args, **kwargs: (_ for _ in ()).throw(OSError("metadata disk failure")),
+    )
+    with pytest.raises(sync.SyncError, match="metadata could not be safely updated"):
+        sync.sync_library(str(root))
+    manifest = json.loads(sync.manifest_path().read_text())
+    assert len(manifest["documents"]) == 1
+    assert len(manifest["pending"]) == 1
+    assert read_metadata(db) is None
+
+    monkeypatch.setattr(sync, "write_metadata", write_metadata)
+    retry = sync.sync_library(str(root))
+    manifest = json.loads(sync.manifest_path().read_text())
+    assert retry.succeeded == 1
+    assert manifest["pending"] == {}
+    assert read_metadata(db)["status"] == "ready"
+    assert len(collection.rows) == 1
+
+
 def test_final_manifest_failure_does_not_mark_new_index_ready(library, monkeypatch):
     root, db, collection, _ = library
     add_pdf(root, "a.pdf", "content")
@@ -340,6 +364,11 @@ def test_partial_chroma_insert_is_retried_from_pending_marker(library):
     manifest = json.loads((db / sync.manifest_path().name).read_text())
     assert manifest["pending"] == {}
     assert len(manifest["documents"]) == 1
+    committed_ids = next(iter(manifest["documents"].values()))["chunk_ids"]
+    third = sync.sync_library(str(root))
+    assert third.unchanged == 1
+    assert len(prepared) == 2
+    assert set(collection.rows) == set(committed_ids)
 
 
 def test_delete_failure_is_recorded_and_retried(library):
@@ -424,10 +453,115 @@ def test_uncommitted_hash_only_record_is_reindexed_instead_of_adopted(library):
     }
     path.rename(root / "new-name.pdf")
 
-    result = sync.sync_library(str(root))
-    assert result.succeeded == 1
-    assert len(prepared) == 1
-    assert legacy_id not in collection.rows
+    with pytest.raises(IndexCompatibilityError, match="cannot be recovered safely"):
+        sync.sync_library(str(root))
+    assert not prepared
+    assert legacy_id in collection.rows
     assert len(collection.rows) == 1
-    row = next(iter(collection.rows.values()))
-    assert row["metadata"]["source"] == "new-name.pdf"
+
+
+def test_pending_initial_with_unknown_physical_chunk_fails_closed(library):
+    root, db, collection, _ = library
+    add_pdf(root, "paper.pdf", "content")
+    collection.fail_upsert_once = True
+    assert sync.sync_library(str(root)).failures
+    collection.rows["unreferenced"] = {
+        "text": "unknown", "metadata": {"document_id": "other", "file_hash": "other"},
+    }
+    with pytest.raises(IndexCompatibilityError, match="unknown"):
+        sync.sync_library(str(root))
+    assert read_metadata(db) is None
+    assert "unreferenced" in collection.rows
+
+
+def test_pending_initial_configuration_mismatch_requires_rebuild(library, monkeypatch):
+    from dataclasses import replace
+
+    root, db, collection, _ = library
+    add_pdf(root, "paper.pdf", "content")
+    collection.fail_upsert_once = True
+    assert sync.sync_library(str(root)).failures
+    original = ingest.get_index_config()
+    monkeypatch.setattr(ingest, "get_index_config", lambda: replace(original, chunk_size=original.chunk_size + 10))
+    with pytest.raises(IndexCompatibilityError, match="configuration differs"):
+        sync.sync_library(str(root))
+    assert read_metadata(db) is None
+    assert not json.loads(sync.manifest_path().read_text())["documents"]
+
+
+def test_failed_retries_keep_initial_write_pending_and_not_ready(library):
+    root, db, collection, _ = library
+    add_pdf(root, "paper.pdf", "content")
+    collection.fail_upsert_once = True
+    assert sync.sync_library(str(root)).failures
+    collection.fail_upsert_once = True
+    retried = sync.sync_library(str(root))
+    manifest = json.loads(sync.manifest_path().read_text())
+    assert retried.failures
+    assert manifest["documents"] == {}
+    assert len(manifest["pending"]) == 1
+    assert read_metadata(db) is None
+
+
+def test_multiple_initial_pending_documents_remain_retryable_if_every_retry_fails(library, monkeypatch):
+    root, db, collection, _ = library
+    add_pdf(root, "a.pdf", "first")
+    add_pdf(root, "b.pdf", "second")
+
+    def interrupted_upsert(ids, documents, embeddings, metadatas):
+        if ids:
+            collection.rows[ids[0]] = {
+                "text": documents[0], "metadata": dict(metadatas[0]),
+            }
+        raise RuntimeError("persistent simulated interruption")
+
+    monkeypatch.setattr(collection, "upsert", interrupted_upsert)
+    first = sync.sync_library(str(root))
+    assert len(first.failures) == 2
+    first_manifest = json.loads(sync.manifest_path().read_text())
+    assert len(first_manifest["pending"]) == 2
+    assert first_manifest["documents"] == {}
+    assert read_metadata(db) is None
+
+    second = sync.sync_library(str(root))
+    second_manifest = json.loads(sync.manifest_path().read_text())
+    assert len(second.failures) == 2
+    assert len(second_manifest["pending"]) == 2
+    assert second_manifest["documents"] == {}
+    assert read_metadata(db) is None
+
+
+def test_valid_initial_pending_document_recovers_alongside_malformed_empty_pending(library):
+    root, db, collection, _ = library
+    add_pdf(root, "a.pdf", "first")
+    add_pdf(root, "b.pdf", "second")
+    original_upsert = collection.upsert
+
+    def interrupted_upsert(ids, documents, embeddings, metadatas):
+        if ids:
+            collection.rows[ids[0]] = {
+                "text": documents[0], "metadata": dict(metadatas[0]),
+            }
+        raise RuntimeError("simulated initial interruptions")
+
+    collection.upsert = interrupted_upsert
+    first = sync.sync_library(str(root))
+    assert len(first.failures) == 2
+    collection.upsert = original_upsert
+    path = sync.manifest_path()
+    manifest = json.loads(path.read_text())
+    digests = sorted(manifest["pending"])
+    malformed_digest = digests[-1]
+    marker = manifest["pending"][malformed_digest]
+    for chunk_id in marker["chunk_ids"]:
+        collection.rows.pop(chunk_id, None)
+    marker["chunk_ids"] = []
+    path.write_text(json.dumps(manifest))
+
+    recovered = sync.sync_library(str(root))
+    manifest = json.loads(path.read_text())
+    assert recovered.succeeded == 1
+    assert recovered.failures
+    assert len(manifest["documents"]) == 1
+    assert malformed_digest in manifest["pending"]
+    assert read_metadata(db)["status"] == "ready"

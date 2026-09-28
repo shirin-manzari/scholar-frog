@@ -42,7 +42,27 @@ def index_status(*, config=None):
     except Exception:
         if metadata is not None:
             raise IndexCompatibilityError("incomplete or corrupted", "Cannot inspect the active Chroma collection.")
-    status = check_compatibility(config, metadata, collection_count=count)
+    try:
+        status = check_compatibility(config, metadata, collection_count=count)
+    except IndexCompatibilityError as exc:
+        if metadata is None and count:
+            # Ask the sync layer whether this is the narrowly defined,
+            # manifest-backed first-write recovery state. Retrieval itself
+            # still remains blocked by get_collection's compatibility check.
+            try:
+                from src.sync import _initial_recovery_state, _read_manifest
+                physical = client.get_collection(name).get(include=["documents", "metadatas"])
+                manifest = _read_manifest()
+                recoverable, reason = _initial_recovery_state(manifest, physical, metadata)
+                if recoverable:
+                    return "recoverable_pending_initial", metadata, count
+                if manifest.get("pending") and "configuration" in reason:
+                    return "incompatible", metadata, count
+                if manifest.get("pending") and "unknown" in reason:
+                    return "corrupted", metadata, count
+            except Exception:
+                pass
+        raise exc
     return status, metadata, count
 
 
@@ -205,7 +225,32 @@ def get_collection():
         collection = client.get_or_create_collection(name)
     config = get_index_config()
     count = collection.count()
-    check_compatibility(config, metadata, collection_count=count)
+    try:
+        check_compatibility(config, metadata, collection_count=count)
+    except IndexCompatibilityError as exc:
+        if metadata is None and count:
+            try:
+                from src.sync import _initial_recovery_state, _read_manifest
+                manifest = _read_manifest()
+                if manifest.get("pending"):
+                    physical = collection.get(include=["documents", "metadatas"])
+                    recoverable, reason = _initial_recovery_state(manifest, physical, metadata)
+                    if recoverable:
+                        raise IndexCompatibilityError(
+                            "recovering", "The initial index is incomplete and awaiting recovery. "
+                            "Run `python ask.py sync` before asking questions."
+                        ) from exc
+                    status = "configuration mismatch" if "configuration differs" in reason else "incomplete or corrupted"
+                    raise IndexCompatibilityError(
+                        status,
+                        f"The initial index is incomplete and cannot be recovered safely: {reason}. "
+                        "Run `python ask.py index rebuild` or clear the incomplete index.",
+                    ) from exc
+            except IndexCompatibilityError:
+                raise
+            except Exception:
+                pass
+        raise
     if count:
         try:
             sample = collection.get(limit=1, include=["embeddings"])

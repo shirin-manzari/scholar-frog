@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src import ingest
-from src.index_config import (IndexCompatibilityError, check_compatibility,
+from src.index_config import (INDEX_SCHEMA_VERSION, IndexCompatibilityError, check_compatibility,
                               new_metadata, read_metadata, write_metadata)
 
 
@@ -222,10 +222,131 @@ def _read_index(dry_run: bool, collection_name: str | None = None) -> dict:
                 client = chromadb.PersistentClient(path=ingest.DB_DIR)
                 collection = client.get_or_create_collection(collection_name)
             else:
-                collection = ingest.get_collection()
+                collection = _collection_for_sync()
         return collection.get(include=["documents", "metadatas"])
     except Exception as exc:
         raise SyncError(f"Cannot read existing Chroma index: {exc}") from exc
+
+
+def _collection_for_sync():
+    """Open the physical collection for sync, including a pending first write.
+
+    Retrieval continues to use ``ingest.get_collection`` and its strict
+    readiness checks. Synchronization needs to inspect an unversioned
+    collection before deciding whether its rows are a safe pending write.
+    """
+    try:
+        return ingest.get_collection()
+    except IndexCompatibilityError as exc:
+        if exc.status not in {"legacy or unversioned", "legacy"}:
+            raise
+        import chromadb
+        client = chromadb.PersistentClient(path=ingest.DB_DIR)
+        return client.get_or_create_collection(ingest.active_collection_name())
+
+
+def _initial_recovery_state(manifest: dict, stored: dict, metadata: dict | None) -> tuple[bool, str]:
+    """Classify the narrow unversioned, interrupted initial-index case."""
+    stored_ids = list(stored.get("ids") or [])
+    ids = set(stored_ids)
+    if metadata is not None:
+        return False, "index metadata already exists"
+    if not ids:
+        return False, "collection has no physical chunks"
+    pending = manifest.get("pending")
+    if not isinstance(pending, dict) or not pending:
+        return False, "no trustworthy pending document writes exist"
+    config = ingest.get_index_config()
+    fingerprint = config.fingerprint
+    if manifest.get("index_version") != fingerprint:
+        return False, "pending index configuration differs; run `python ask.py index rebuild` or clear the incomplete index"
+    if manifest.get("index_schema_version", INDEX_SCHEMA_VERSION) != INDEX_SCHEMA_VERSION:
+        return False, "pending index schema differs; run `python ask.py index rebuild` or clear the incomplete index"
+    intended_config = manifest.get("index_configuration")
+    if intended_config is not None and intended_config != config.canonical():
+        return False, "pending index configuration differs; run `python ask.py index rebuild` or clear the incomplete index"
+
+    pending_ids: set[str] = set()
+    owner_by_id = {}
+    committed_ids: set[str] = set()
+    committed_owner = {}
+    for digest, entry in manifest.get("documents", {}).items():
+        if entry.get("status") not in {"indexed", "stale"}:
+            continue
+        chunk_ids = entry.get("chunk_ids")
+        if (not isinstance(chunk_ids, list)
+                or any(not isinstance(value, str) or not value for value in chunk_ids)
+                or len(set(chunk_ids)) != len(chunk_ids)):
+            return False, f"committed document {digest[:12]} has malformed chunk IDs"
+        committed_ids.update(chunk_ids)
+        for chunk_id in chunk_ids:
+            if chunk_id in committed_owner:
+                return False, f"committed chunk {chunk_id!r} is claimed by multiple documents"
+            committed_owner[chunk_id] = digest
+    for digest, entry in pending.items():
+        if (not isinstance(entry, dict) or entry.get("status") != "pending"
+                or not isinstance(entry.get("chunk_ids"), list)
+                or not isinstance(entry.get("paths"), list) or not entry.get("paths")
+                or any(not isinstance(path, str) or not path for path in entry["paths"])
+                or any(not isinstance(chunk_id, str) or not chunk_id for chunk_id in entry["chunk_ids"])
+                or len(set(entry["chunk_ids"])) != len(entry["chunk_ids"])):
+            continue
+        if entry.get("configuration_fingerprint", fingerprint) != fingerprint:
+            return False, f"pending document {digest[:12]} was written with a different configuration; rebuild or clear the incomplete index"
+        if entry.get("configuration") not in (None, config.canonical()):
+            return False, f"pending document {digest[:12]} was written with a different configuration; rebuild or clear the incomplete index"
+        for chunk_id in entry["chunk_ids"]:
+            if chunk_id in owner_by_id:
+                return False, f"pending chunk {chunk_id!r} is claimed by multiple document writes"
+            owner_by_id[chunk_id] = digest
+            pending_ids.add(chunk_id)
+
+    known_ids = pending_ids | committed_ids
+    unknown = ids - known_ids
+    if unknown:
+        return False, f"physical chunks are not referenced by pending writes ({len(unknown)} unknown); rebuild or clear the incomplete index"
+    if not committed_ids.issubset(ids):
+        return False, "committed manifest versions are missing physical chunks; rebuild or clear the incomplete index"
+    if not pending_ids or not ids:
+        return False, "pending records do not identify the physical initial write"
+
+    physical = dict(zip(
+        stored_ids,
+        zip(stored.get("documents") or [], stored.get("metadatas") or []),
+    ))
+    for chunk_id, (text, raw_metadata) in physical.items():
+        digest = owner_by_id.get(chunk_id)
+        metadata = raw_metadata or {}
+        expected_owner = digest or committed_owner.get(chunk_id)
+        if expected_owner is not None and (
+            metadata.get("document_id") != expected_owner or metadata.get("file_hash") != expected_owner
+        ):
+            return False, f"physical chunk {chunk_id!r} does not match its pending document; rebuild or clear the incomplete index"
+    return True, "pending initial index matches the active configuration and physical chunks"
+
+
+def _verify_pending_embeddings(collection, stored: dict) -> None:
+    """Check stored vector dimensions before rewriting a pending initial version."""
+    ids = list(stored.get("ids") or [])
+    if not ids:
+        return
+    try:
+        result = collection.get(ids=ids, include=["embeddings"])
+        embeddings = result.get("embeddings")
+    except Exception as exc:
+        raise IndexCompatibilityError(
+            "incomplete or corrupted", f"Cannot inspect embeddings for pending initial chunks: {exc}"
+        ) from exc
+    if embeddings is None:
+        return
+    dimension = ingest.get_index_config().embedding_dimension
+    if (len(embeddings) != len(ids)
+            or any(vector is None or len(vector) != dimension for vector in embeddings)):
+        raise IndexCompatibilityError(
+            "configuration mismatch",
+            f"Pending initial chunks do not match the configured embedding dimension {dimension}; "
+            "run `python ask.py index rebuild` or clear the incomplete index.",
+        )
 
 
 def _group_records(stored: dict, files: list[dict]) -> dict[str, list[dict]]:
@@ -427,13 +548,61 @@ def sync_library(papers_dir: str = "papers", *, dry_run: bool = False,
         )
 
 
+def _clear_finalized_pending(collection_name: str | None = None) -> None:
+    """Finish a crash-interrupted pending cleanup after metadata became ready."""
+    if collection_name:
+        return
+    metadata = read_metadata(ingest.DB_DIR)
+    if metadata is None or metadata.get("status") != "ready":
+        return
+    if metadata.get("configuration_fingerprint") != ingest.get_index_config().fingerprint:
+        return
+    path = manifest_path()
+    manifest = _read_manifest(path=path)
+    pending = manifest.get("pending", {})
+    removable = [
+        digest for digest, marker in pending.items()
+        if digest in manifest.get("documents", {})
+        and manifest["documents"][digest].get("status") in {"indexed", "stale", "empty"}
+        and manifest["documents"][digest].get("chunk_ids") == marker.get("chunk_ids")
+    ]
+    if not removable:
+        return
+    for digest in removable:
+        del pending[digest]
+    manifest["pending"] = pending
+    _write_manifest(manifest, path=path)
+    _invalidate_snapshot(path)
+
+
 def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
                          force: bool = False, reindex: bool = False,
                          collection_name: str | None = None) -> SyncPlan:
+    if not dry_run:
+        _clear_finalized_pending(collection_name)
     plan = plan_sync(papers_dir, dry_run=dry_run, reindex=reindex,
                      collection_name=collection_name)
     if dry_run:
         return plan
+
+    recovering_initial = False
+    if not collection_name:
+        metadata = read_metadata(ingest.DB_DIR)
+        if metadata is None and (plan.stored.get("ids") or []):
+            recovering_initial, reason = _initial_recovery_state(
+                plan.manifest, plan.stored, metadata
+            )
+            if not recovering_initial:
+                status = (
+                    "configuration mismatch" if "configuration" in reason else
+                    "incomplete or corrupted" if plan.manifest.get("pending") else
+                    "legacy or unversioned"
+                )
+                raise IndexCompatibilityError(
+                    status,
+                    "The unversioned Chroma collection cannot be recovered safely: "
+                    f"{reason}. Run `python ask.py index rebuild` to replace it.",
+                )
 
     indexed = set(plan.manifest["documents"]) | set(_group_records(plan.stored, plan.files))
     ratio = plan.deleted / len(indexed) if indexed else 0
@@ -449,7 +618,9 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
         import chromadb
         collection = chromadb.PersistentClient(path=ingest.DB_DIR).get_or_create_collection(collection_name)
     else:
-        collection = ingest.get_collection()
+        collection = _collection_for_sync()
+    if recovering_initial:
+        _verify_pending_embeddings(collection, plan.stored)
     active_manifest_path = manifest_path(collection_name)
     previous_committed_revision = _committed_revision(
         plan.manifest.get("documents", {}), ingest.get_index_config().fingerprint
@@ -472,11 +643,26 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
             plan.failures.append(f"{paths[0]}: {exc}")
             ingest.console.print(f"[red]Could not prepare {paths[0]}:[/red] {exc}")
 
-    # Each reprocessed document gets new physical IDs so a failed replacement
-    # cannot overwrite the version that remains committed and visible.
-    for digest, document in prepared.items():
-        version_id = uuid.uuid4().hex[:16]
-        document["ids"] = [f"{chunk_id}-{version_id}" for chunk_id in document["ids"]]
+    # New versions get fresh IDs so a failed replacement cannot overwrite the
+    # version that remains committed and visible. A recoverable initial write
+    # reuses its manifest-recorded IDs, making retries idempotent.
+    for digest, document in list(prepared.items()):
+        existing_pending = plan.manifest.get("pending", {}).get(digest, {})
+        existing_ids = existing_pending.get("chunk_ids", [])
+        if recovering_initial and existing_pending and len(existing_ids) != len(document["ids"]):
+            paths = sorted(item["path"] for item in by_hash[digest])
+            failed_paths.update(paths)
+            plan.failures.append(
+                f"{paths[0]}: pending chunk IDs do not match the active chunking result; "
+                "rebuild or clear the incomplete index."
+            )
+            del prepared[digest]
+            continue
+        if recovering_initial and len(existing_ids) == len(document["ids"]):
+            document["ids"] = list(existing_ids)
+        else:
+            version_id = uuid.uuid4().hex[:16]
+            document["ids"] = [f"{chunk_id}-{version_id}" for chunk_id in document["ids"]]
 
     # Record intended IDs before touching Chroma. A crash during upsert leaves
     # a durable marker so the next run can retry without exposing these IDs.
@@ -485,11 +671,15 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
         pending[digest] = {
             "paths": sorted(item["path"] for item in by_hash[digest]),
             "chunk_ids": document["ids"], "status": "pending",
+            "configuration_fingerprint": ingest.get_index_config().fingerprint,
+            "configuration": ingest.get_index_config().canonical(),
         }
     if prepared:
         try:
             _write_manifest({
                 "version": 1, "index_version": ingest.get_index_config().fingerprint,
+                "index_schema_version": INDEX_SCHEMA_VERSION,
+                "index_configuration": ingest.get_index_config().canonical(),
                 "updated_at": datetime.now(timezone.utc).isoformat(),
                 "documents": plan.manifest["documents"], "pending": pending,
             }, path=active_manifest_path)
@@ -605,9 +795,11 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
         }
 
     pending = {digest: details for digest, details in pending.items()
-               if digest not in current and digest in by_hash}
+               if (digest not in current or digest in prepared) and digest in by_hash}
     manifest = {
         "version": 1, "index_version": ingest.get_index_config().fingerprint,
+        "index_schema_version": INDEX_SCHEMA_VERSION,
+        "index_configuration": ingest.get_index_config().canonical(),
         "updated_at": timestamp, "documents": next_documents, "pending": pending,
     }
     try:
@@ -670,7 +862,10 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
             # `ready` means the manifest and version metadata describe a usable,
             # committed index. Other PDFs may still have recoverable failures.
             should_write = (
-                (previous_meta is None and bool(successfully_prepared))
+                (previous_meta is None and any(
+                    digest in next_documents and next_documents[digest].get("chunk_ids")
+                    for digest in successfully_prepared
+                ))
                 or (previous_meta is not None and index_changed)
             )
             if should_write:
@@ -681,6 +876,26 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
         except (OSError, IndexCompatibilityError) as exc:
             raise SyncError(
                 f"Index content and manifest were committed, but version metadata could not be safely updated: {exc}"
+            ) from exc
+
+    # The manifest's document entries are the visibility commit point. Keep
+    # recovery markers until index metadata is finalized, then clear them in a
+    # second atomic manifest write. A crash before this write is reconciled by
+    # _clear_finalized_pending on the next synchronization.
+    finalized = [
+        digest for digest, marker in manifest.get("pending", {}).items()
+        if digest in manifest["documents"]
+        and manifest["documents"][digest].get("status") in {"indexed", "stale", "empty"}
+        and manifest["documents"][digest].get("chunk_ids") == marker.get("chunk_ids")
+    ]
+    if finalized:
+        for digest in finalized:
+            del manifest["pending"][digest]
+        try:
+            _write_manifest(manifest, path=active_manifest_path)
+        except OSError as exc:
+            raise SyncError(
+                f"Index is committed and metadata is ready, but recovery markers could not be cleared: {exc}"
             ) from exc
 
     if index_changed:
