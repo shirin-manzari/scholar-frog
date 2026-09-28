@@ -18,6 +18,16 @@ Put text-based PDFs in `papers/`, start Ollama, then run:
 python ask.py "What methods do these papers use?"
 ```
 
+## Local web UI
+
+Run `python app.py`, then open <http://127.0.0.1:8765>. Add PDFs in the
+browser or place them in `papers/`, click **Sync library**, and ask a question.
+The UI shows validated evidence references and lets you open the cited PDF
+page. Messages remain visible in the current tab, but each question is
+answered independently; refreshing the page clears the chat view.
+The server listens only on your computer; stop it with Ctrl+C. The first sync
+may download local embedding models and take a few minutes.
+
 PDFs, embeddings, and the index remain local. Scanned PDFs are unsupported.
 OpenAI and Anthropic are optional answer-generation backends; configure their
 API keys in `.env` and install the matching package.
