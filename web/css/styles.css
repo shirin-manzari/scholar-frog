@@ -5,9 +5,9 @@
   --soft: #8b8b8b;
   --line: #e7e7e7;
   --surface: #fafafa;
-  --accent: hotpink;
-  --accent-ink: #96355f;
-  --accent-soft: #f9d6e9;
+  --accent: #79bd5b;
+  --accent-ink: #2c6b3d;
+  --accent-soft: #e2f1dd;
   --sidebar-bg: #f0e5d8;
   --error: #82071e;
   color-scheme: light;
@@ -68,6 +68,7 @@ code { font-size: 12px; }
 }
 .assistant .bubble::before { left: -12px; top: 29px; width: 12px; height: 20px; background: var(--line); }
 .assistant .bubble::after { left: -10px; top: 31px; width: 11px; height: 16px; background: var(--surface); }
+.welcome-name { color: var(--accent-ink); font-weight: 700; }
 .scholar-frog {
   --frog-frame-size: 120px;
   --frog-frame-count: 3;

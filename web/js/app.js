@@ -9,8 +9,9 @@ async function request(path, options) {
 
 function postJson(path, payload) {
   return request(path, {
-    method: "POST", headers: {"Content-Type": "application/json"},
-    body: JSON.stringify(payload)
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
   });
 }
 
@@ -48,7 +49,7 @@ function plainDisplayText(text) {
 
 async function refreshStatus() {
   try {
-    const {papers} = await request("/api/status");
+    const { papers } = await request("/api/status");
     const list = $("paper-list");
     list.replaceChildren();
     if (!papers.length) return showPaperListMessage("No PDFs yet");
@@ -76,7 +77,12 @@ async function syncLibrary() {
   try {
     const result = await postJson("/api/sync", {});
     const summary = `Synced: ${result.added} added, ${result.modified} updated, ${result.unchanged} unchanged.`;
-    showLibraryMessage(result.failures.length ? `${summary} ${result.failures.join(" ")}` : summary, result.failures.length > 0);
+    showLibraryMessage(
+      result.failures.length
+        ? `${summary} ${result.failures.join(" ")}`
+        : summary,
+      result.failures.length > 0,
+    );
     await refreshStatus();
   } catch (error) {
     showLibraryMessage(error.message, true);
@@ -89,9 +95,16 @@ async function uploadPdf(file) {
   showLibraryMessage(`Adding ${file.name}…`);
   try {
     const result = await request("/api/upload", {
-      method: "POST", headers: {"Content-Type": "application/pdf", "X-Filename": encodeURIComponent(file.name)}, body: file
+      method: "POST",
+      headers: {
+        "Content-Type": "application/pdf",
+        "X-Filename": encodeURIComponent(file.name),
+      },
+      body: file,
     });
-    showLibraryMessage(`Added ${result.filename}. Sync the library to index it.`);
+    showLibraryMessage(
+      `Added ${result.filename}. Sync the library to index it.`,
+    );
     await refreshStatus();
   } catch (error) {
     showLibraryMessage(error.message, true);
@@ -116,25 +129,30 @@ function setScholarFrogState(frog, state) {
   frog.dataset.state = state;
 }
 
-function appendMessage(role, text) {
+function appendMessage(role, text, frogState = "idle") {
   const row = document.createElement("div");
   row.className = `message-row ${role}`;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   bubble.textContent = text;
-  const frog = role === "assistant" ? createScholarFrog() : null;
+  const frog = role === "assistant" ? createScholarFrog(frogState) : null;
   if (frog) row.append(frog);
   row.append(bubble);
   $("conversation").append(row);
   scrollToLatest();
-  return {bubble, frog};
+  return { row, bubble, frog };
 }
 
 function renderAnswer(data, bubble, turn) {
   bubble.replaceChildren();
   const heading = document.createElement("strong");
   heading.className = "response-label";
-  heading.textContent = data.status === "answered" ? "Scholar Frog" : data.status === "abstained" ? "No supported answer" : "Answer unavailable";
+  heading.textContent =
+    data.status === "answered"
+      ? "Scholar Frog"
+      : data.status === "abstained"
+        ? "No supported answer"
+        : "Answer unavailable";
   const answer = document.createElement("div");
   answer.className = "answer";
   bubble.append(heading, answer);
@@ -166,7 +184,8 @@ function renderAnswer(data, bubble, turn) {
       summary.textContent = `[${item.id}] ${withoutBoldMarkers(item.reference)}`;
       const excerpt = document.createElement("p");
       const excerptText = plainDisplayText(item.text);
-      const publicationLine = ", Vol. 1, No. 1, Article . Publication date: May 2018.";
+      const publicationLine =
+        ", Vol. 1, No. 1, Article . Publication date: May 2018.";
       const publicationStart = excerptText.indexOf(publicationLine);
       if (publicationStart < 0) {
         excerpt.textContent = excerptText;
@@ -174,8 +193,9 @@ function renderAnswer(data, bubble, turn) {
         const publication = document.createElement("em");
         publication.textContent = publicationLine;
         excerpt.append(
-          excerptText.slice(0, publicationStart), publication,
-          excerptText.slice(publicationStart + publicationLine.length)
+          excerptText.slice(0, publicationStart),
+          publication,
+          excerptText.slice(publicationStart + publicationLine.length),
         );
       }
       card.append(summary, excerpt);
@@ -214,23 +234,37 @@ $("question").addEventListener("keydown", (event) => {
   }
 });
 
+const welcomeMessage = appendMessage("assistant", "", "talking");
+const welcomeName = document.createElement("span");
+welcomeName.className = "welcome-name";
+welcomeName.textContent = "Scholar Frog";
+welcomeMessage.bubble.append(
+  "Hi, i’m ",
+  welcomeName,
+  ". they gave me a hat, so now i do research. add your papers and ask me questions.",
+);
+
 let turnNumber = 0;
 $("question-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $("question");
   const question = input.value.trim();
   if (!question) return;
+  welcomeMessage.row.remove();
   const button = $("ask-button");
   button.disabled = true;
   input.disabled = true;
   input.value = "";
   appendMessage("user", question);
-  const {bubble: response, frog} = appendMessage("assistant", "Searching papers and checking citations…");
+  const { bubble: response, frog } = appendMessage(
+    "assistant",
+    "Searching papers and checking citations…",
+  );
   response.classList.add("pending");
   setScholarFrogState(frog, "talking");
   const turn = ++turnNumber;
   try {
-    const data = await postJson("/api/ask", {question});
+    const data = await postJson("/api/ask", { question });
     renderAnswer(data, response, turn);
     setScholarFrogState(frog, data.status === "answered" ? "idle" : "crying");
   } catch (error) {
