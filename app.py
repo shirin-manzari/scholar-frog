@@ -1,4 +1,4 @@
-"""Small local web interface for the existing scholarq pipeline."""
+"""Small local web interface for the Scholar Frog research pipeline."""
 
 import json
 import os
@@ -64,7 +64,7 @@ def ask_question(question):
 class Handler(BaseHTTPRequestHandler):
     def allowed_request(self):
         if self.headers.get("Host") not in {"127.0.0.1:8765", "localhost:8765"}:
-            self.send_json({"error": "Use the local ScholarQ address."}, 403)
+            self.send_json({"error": "Use the local Scholar Frog address."}, 403)
             return False
         if self.command == "POST" and self.headers.get("Origin") not in {
             None, "http://127.0.0.1:8765", "http://localhost:8765"
@@ -88,6 +88,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(data)))
         self.send_header("X-Content-Type-Options", "nosniff")
+        self.send_header("Cache-Control", "no-store")
         self.end_headers()
         self.wfile.write(data)
 
@@ -171,7 +172,7 @@ class Handler(BaseHTTPRequestHandler):
 def main():
     os.chdir(ROOT)
     server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
-    print("ScholarQ is running at http://127.0.0.1:8765")
+    print("Scholar Frog is running at http://127.0.0.1:8765")
     try:
         server.serve_forever()
     except KeyboardInterrupt:

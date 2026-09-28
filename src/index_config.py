@@ -12,7 +12,8 @@ from pathlib import Path
 INDEX_SCHEMA_VERSION = 1
 CHUNKING_VERSION = "markdown-heading-paragraph-v1"
 TEXT_EXTRACTION_VERSION = "pymupdf4llm-fallback-v1"
-CONFIG_FILE = "scholarq.toml"
+CONFIG_FILE = "scholar-frog.toml"
+LEGACY_CONFIG_FILE = "scholarq.toml"
 
 
 @dataclass(frozen=True)
@@ -54,13 +55,13 @@ class IndexConfig:
 
 
 _ENV = {
-    "embedding_model": ("SCHOLARQ_EMBEDDING_MODEL", str),
-    "embedding_revision": ("SCHOLARQ_EMBEDDING_REVISION", str),
-    "embedding_dimension": ("SCHOLARQ_EMBEDDING_DIMENSION", int),
-    "normalize_embeddings": ("SCHOLARQ_NORMALIZE_EMBEDDINGS", lambda v: _bool(v)),
-    "chunk_size": ("SCHOLARQ_CHUNK_SIZE", int),
-    "chunk_overlap": ("SCHOLARQ_CHUNK_OVERLAP", int),
-    "chunking_strategy": ("SCHOLARQ_CHUNKING_STRATEGY", str),
+    "embedding_model": ("EMBEDDING_MODEL", str),
+    "embedding_revision": ("EMBEDDING_REVISION", str),
+    "embedding_dimension": ("EMBEDDING_DIMENSION", int),
+    "normalize_embeddings": ("NORMALIZE_EMBEDDINGS", lambda v: _bool(v)),
+    "chunk_size": ("CHUNK_SIZE", int),
+    "chunk_overlap": ("CHUNK_OVERLAP", int),
+    "chunking_strategy": ("CHUNKING_STRATEGY", str),
 }
 _USER_OPTIONS = frozenset({
     "embedding_model", "embedding_revision", "embedding_dimension",
@@ -75,9 +76,11 @@ def _bool(value: str) -> bool:
     return lowered in {"true", "1", "yes"}
 
 
-def load_index_config(*, overrides: dict | None = None, config_path: str | Path = CONFIG_FILE) -> IndexConfig:
+def load_index_config(*, overrides: dict | None = None, config_path: str | Path | None = None) -> IndexConfig:
     values = IndexConfig().canonical()
-    path = Path(config_path)
+    path = Path(config_path) if config_path is not None else Path(CONFIG_FILE)
+    if config_path is None and not path.exists() and Path(LEGACY_CONFIG_FILE).exists():
+        path = Path(LEGACY_CONFIG_FILE)
     if path.exists():
         try:
             try:
@@ -93,7 +96,10 @@ def load_index_config(*, overrides: dict | None = None, config_path: str | Path 
             values.update(section)
         except (OSError, ValueError) as exc:
             raise ValueError(f"Invalid configuration in {path}: {exc}") from exc
-    for key, (env_name, cast) in _ENV.items():
+    for key, (suffix, cast) in _ENV.items():
+        current_name = f"SCHOLAR_FROG_{suffix}"
+        legacy_name = f"SCHOLARQ_{suffix}"
+        env_name = current_name if current_name in os.environ else legacy_name
         if env_name in os.environ:
             try:
                 values[key] = cast(os.environ[env_name])

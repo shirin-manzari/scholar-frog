@@ -134,7 +134,7 @@ function renderAnswer(data, bubble, turn) {
   bubble.replaceChildren();
   const heading = document.createElement("strong");
   heading.className = "response-label";
-  heading.textContent = data.status === "answered" ? "ScholarQ" : data.status === "abstained" ? "No supported answer" : "Answer unavailable";
+  heading.textContent = data.status === "answered" ? "Scholar Frog" : data.status === "abstained" ? "No supported answer" : "Answer unavailable";
   const answer = document.createElement("div");
   answer.className = "answer";
   bubble.append(heading, answer);
