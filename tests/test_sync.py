@@ -275,8 +275,9 @@ def test_missing_library_and_deletion_safeguard_are_safe(library):
     with pytest.raises(sync.SyncError, match="does not exist"):
         sync.sync_library(str(root / "missing"), force=True)
     (root / "a.pdf").unlink()
-    with pytest.raises(sync.SyncError, match="SYNC_DELETE_THRESHOLD"):
+    with pytest.raises(sync.SyncDeletionConfirmationRequired, match="SYNC_DELETE_THRESHOLD") as error:
         sync.sync_library(str(root))
+    assert (error.value.deleted, error.value.indexed) == (1, 1)
     assert collection.rows
 
 

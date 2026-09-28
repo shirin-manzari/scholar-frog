@@ -3,7 +3,13 @@ const $ = (id) => document.getElementById(id);
 async function request(path, options) {
   const response = await fetch(path, options);
   const data = await response.json();
-  if (!response.ok) throw new Error(data.error || "Something went wrong.");
+  if (!response.ok) {
+    const error = new Error(data.error || "Something went wrong.");
+    error.code = data.code;
+    error.deleted = data.deleted;
+    error.indexed = data.indexed;
+    throw error;
+  }
   return data;
 }
 
@@ -80,8 +86,24 @@ async function syncLibrary() {
   button.disabled = true;
   showLibraryMessage("Syncing papers… First use may take a few minutes.");
   try {
-    const result = await postJson("/api/sync", {});
-    const summary = `Synced: ${result.added} added, ${result.modified} updated, ${result.unchanged} unchanged.`;
+    let result;
+    try {
+      result = await postJson("/api/sync", {});
+    } catch (error) {
+      if (error.code !== "delete_confirmation_required") throw error;
+      const count = error.deleted;
+      const confirmed = window.confirm(
+        `Remove ${count} indexed paper${count === 1 ? "" : "s"} from Scholar Frog's search index? ` +
+          `This is ${count} of ${error.indexed} indexed papers. PDFs in the papers folder will not be changed.`,
+      );
+      if (!confirmed) {
+        showLibraryMessage("Sync canceled. The search index was not changed.");
+        return;
+      }
+      showLibraryMessage("Removing deleted papers from the search index…");
+      result = await postJson("/api/sync", { force: true });
+    }
+    const summary = `Synced: ${result.added} added, ${result.modified} updated, ${result.deleted} removed, ${result.unchanged} unchanged.`;
     showLibraryMessage(
       result.failures.length
         ? `${summary} ${result.failures.join(" ")}`
@@ -149,16 +171,21 @@ function appendMessage(role, text, frogState = "idle") {
 }
 
 const NO_PAPERS_MESSAGES = [
-  "you gave frog no papers. frog cannot perform miracle.",
+  "You gave frog no papers. frog cannot perform miracle.",
   "Please give me papers. I cannot research from pure frog instinct.",
 ];
+
+function randomNoPapersMessage() {
+  return NO_PAPERS_MESSAGES[
+    Math.floor(Math.random() * NO_PAPERS_MESSAGES.length)
+  ];
+}
 
 function showEmptyConversation(hasPapers) {
   if (turnNumber > 0) return;
   $("conversation").replaceChildren();
   if (!hasPapers) {
-    const line = NO_PAPERS_MESSAGES[Math.floor(Math.random() * NO_PAPERS_MESSAGES.length)];
-    appendMessage("assistant", line, "idle");
+    appendMessage("assistant", randomNoPapersMessage(), "idle");
     return;
   }
   const welcomeMessage = appendMessage("assistant", "", "talking");
@@ -285,8 +312,14 @@ $("question-form").addEventListener("submit", async (event) => {
   const turn = ++turnNumber;
   try {
     const data = await postJson("/api/ask", { question });
-    renderAnswer(data, response, turn);
-    setScholarFrogState(frog, data.status === "answered" ? "idle" : "crying");
+    if (data.status === "no_papers") {
+      response.textContent = randomNoPapersMessage();
+      setScholarFrogState(frog, "idle");
+      await refreshStatus();
+    } else {
+      renderAnswer(data, response, turn);
+      setScholarFrogState(frog, data.status === "answered" ? "idle" : "crying");
+    }
   } catch (error) {
     response.classList.add("error");
     response.textContent = error.message;

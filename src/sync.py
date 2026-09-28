@@ -18,6 +18,21 @@ class SyncError(RuntimeError):
     """The paper library could not be safely synchronized."""
 
 
+class SyncDeletionConfirmationRequired(SyncError):
+    """A sync needs explicit approval before removing many indexed papers."""
+
+    def __init__(self, deleted: int, indexed: int, threshold: float):
+        self.deleted = deleted
+        self.indexed = indexed
+        self.threshold = threshold
+        ratio = deleted / indexed
+        super().__init__(
+            f"Sync would remove {deleted} of {indexed} indexed documents "
+            f"({ratio:.0%}), above SYNC_DELETE_THRESHOLD={threshold:.0%}. "
+            "Review the library and rerun with --force to confirm."
+        )
+
+
 INDEX_LOCK = threading.RLock()
 _snapshot_cache: dict[str, tuple[tuple[int, int, int, str], "CommittedSnapshot"]] = {}
 
@@ -596,11 +611,7 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
     ratio = plan.deleted / len(indexed) if indexed else 0
     threshold = _delete_threshold()
     if plan.deleted and ratio > threshold and not force:
-        raise SyncError(
-            f"Sync would remove {plan.deleted} of {len(indexed)} indexed documents "
-            f"({ratio:.0%}), above SYNC_DELETE_THRESHOLD={threshold:.0%}. "
-            "Review the library and rerun with --force to confirm."
-        )
+        raise SyncDeletionConfirmationRequired(plan.deleted, len(indexed), threshold)
 
     if collection_name:
         import chromadb

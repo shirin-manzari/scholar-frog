@@ -10,7 +10,7 @@ from src.citations import GenerationStatus
 from src.generate import generate_answer
 from src.index_config import IndexCompatibilityError
 from src.retrieve import RetrievalConfig, retrieve
-from src.sync import SyncError, sync_library
+from src.sync import SyncDeletionConfirmationRequired, SyncError, sync_library
 
 
 ROOT = Path(__file__).resolve().parent
@@ -45,8 +45,37 @@ def library_status():
     return {"papers": papers}
 
 
+def _available_chunks(chunks, paper_paths):
+    available = []
+    for chunk in chunks:
+        metadata = chunk.get("metadata") or {}
+        aliases = metadata.get("source_paths", [])
+        if isinstance(aliases, str):
+            try:
+                aliases = json.loads(aliases)
+            except json.JSONDecodeError:
+                aliases = []
+        if not isinstance(aliases, list):
+            aliases = []
+        source = next((path for path in [chunk.get("source"), *aliases]
+                       if isinstance(path, str) and path in paper_paths), None)
+        if source is None:
+            continue
+        if source != chunk.get("source"):
+            chunk = {**chunk, "source": source, "metadata": {**metadata, "source": source}}
+        available.append(chunk)
+    return available
+
+
 def ask_question(question):
-    chunks = retrieve(question, top_k=RetrievalConfig.from_env().final_results)
+    paper_paths = set(library_status()["papers"])
+    if not paper_paths:
+        return {"status": "no_papers", "answer": "", "references": [], "warnings": []}
+    config = RetrievalConfig.from_env()
+    candidate_count = max(config.final_results, config.dense_candidates,
+                          config.bm25_candidates, config.rerank_candidates)
+    chunks = _available_chunks(retrieve(question, top_k=candidate_count), paper_paths)
+    chunks = chunks[:config.final_results]
     result = generate_answer(question, chunks)
     cited = result.validation.valid_evidence if result.status is GenerationStatus.ANSWERED else []
     return {
@@ -154,7 +183,10 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(payload, dict):
                 raise ValueError("Expected a JSON object.")
             if parsed.path == "/api/sync":
-                plan = sync_library(str(PAPERS))
+                force = payload.get("force", False)
+                if not isinstance(force, bool):
+                    return self.send_json({"error": "force must be a boolean."}, 400)
+                plan = sync_library(str(PAPERS), force=force)
                 return self.send_json({
                     "added": plan.added, "modified": plan.modified, "deleted": plan.deleted,
                     "unchanged": plan.unchanged, "failures": plan.failures,
@@ -163,6 +195,11 @@ class Handler(BaseHTTPRequestHandler):
             if not isinstance(question, str) or not question.strip() or len(question) > 4000:
                 return self.send_json({"error": "Enter a question of up to 4,000 characters."}, 400)
             return self.send_json(ask_question(question.strip()))
+        except SyncDeletionConfirmationRequired as exc:
+            return self.send_json({
+                "error": str(exc), "code": "delete_confirmation_required",
+                "deleted": exc.deleted, "indexed": exc.indexed,
+            }, 409)
         except (json.JSONDecodeError, ValueError) as exc:
             return self.send_json({"error": str(exc)}, 400)
         except (SyncError, IndexCompatibilityError, RuntimeError, ImportError) as exc:
