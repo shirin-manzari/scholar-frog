@@ -51,6 +51,8 @@ def library(tmp_path, monkeypatch):
     collection = MemoryCollection()
     monkeypatch.setattr(ingest, "DB_DIR", str(db))
     monkeypatch.setattr(ingest, "get_collection", lambda: collection)
+    monkeypatch.setattr(ingest, "open_raw_collection", lambda: collection)
+    monkeypatch.setattr(ingest, "validate_collection_ready", lambda current: current)
     prepared = []
 
     def fake_prepare(item, digest, paths):
@@ -404,6 +406,8 @@ def test_real_chroma_collection_supports_sync_operations(tmp_path, monkeypatch):
     client = chromadb.PersistentClient(path=str(db))
     collection = client.get_or_create_collection("sync-test")
     monkeypatch.setattr(ingest, "get_collection", lambda: collection)
+    monkeypatch.setattr(ingest, "open_raw_collection", lambda: collection)
+    monkeypatch.setattr(ingest, "validate_collection_ready", lambda current: current)
 
     def prepare(item, digest, paths):
         chunk_id = f"{digest}-1-0"
@@ -411,7 +415,7 @@ def test_real_chroma_collection_supports_sync_operations(tmp_path, monkeypatch):
                     "title": paths[0], "section": "Results", "page": 1,
                     "document_id": digest, "file_hash": digest}
         return {"ids": [chunk_id], "documents": ["indexed passage"],
-                "metadatas": [metadata], "embeddings": [[1.0, 0.0]]}
+                "metadatas": [metadata], "embeddings": [[1.0] * 384]}
 
     monkeypatch.setattr(sync, "_prepare", prepare)
     add_pdf(root, "nested/one.pdf", "identical")

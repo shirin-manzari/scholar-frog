@@ -229,20 +229,8 @@ def _read_index(dry_run: bool, collection_name: str | None = None) -> dict:
 
 
 def _collection_for_sync():
-    """Open the physical collection for sync, including a pending first write.
-
-    Retrieval continues to use ``ingest.get_collection`` and its strict
-    readiness checks. Synchronization needs to inspect an unversioned
-    collection before deciding whether its rows are a safe pending write.
-    """
-    try:
-        return ingest.get_collection()
-    except IndexCompatibilityError as exc:
-        if exc.status not in {"legacy or unversioned", "legacy"}:
-            raise
-        import chromadb
-        client = chromadb.PersistentClient(path=ingest.DB_DIR)
-        return client.get_or_create_collection(ingest.active_collection_name())
+    """Open the active physical collection for synchronization inspection."""
+    return ingest.open_raw_collection()
 
 
 def _initial_recovery_state(manifest: dict, stored: dict, metadata: dict | None) -> tuple[bool, str]:
@@ -621,6 +609,11 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
         collection = _collection_for_sync()
     if recovering_initial:
         _verify_pending_embeddings(collection, plan.stored)
+    elif not collection_name:
+        # Raw access is only an opening mechanism. Existing versioned indexes
+        # must still pass the same compatibility and dimension checks used by
+        # retrieval before synchronization mutates them.
+        ingest.validate_collection_ready(collection)
     active_manifest_path = manifest_path(collection_name)
     previous_committed_revision = _committed_revision(
         plan.manifest.get("documents", {}), ingest.get_index_config().fingerprint

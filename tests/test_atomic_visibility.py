@@ -83,6 +83,8 @@ def harness(tmp_path, monkeypatch):
     collection = AtomicCollection()
     monkeypatch.setattr(ingest, "DB_DIR", str(db))
     monkeypatch.setattr(ingest, "get_collection", lambda: collection)
+    monkeypatch.setattr(ingest, "open_raw_collection", lambda: collection)
+    monkeypatch.setattr(ingest, "validate_collection_ready", lambda current: current)
     monkeypatch.setattr(retrieve, "get_collection", lambda: collection)
     monkeypatch.setattr(retrieve, "get_embedding_model", lambda: EmbeddingModel())
     monkeypatch.setattr(retrieve, "_create_reranker", lambda name: CrossEncoder())
@@ -344,6 +346,7 @@ def test_real_chroma_partial_insert_is_invisible_then_recovered(tmp_path, monkey
 
     proxy = InterruptOnce()
     monkeypatch.setattr(ingest, "get_collection", lambda: proxy)
+    monkeypatch.setattr(ingest, "open_raw_collection", lambda: proxy)
     monkeypatch.setattr(retrieve, "get_collection", lambda: raw)
     monkeypatch.setattr(retrieve, "get_embedding_model", lambda: EmbeddingModel())
     monkeypatch.setattr(sync, "_prepare", lambda item, digest, paths: _prepare(item, digest, paths))

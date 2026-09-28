@@ -210,7 +210,13 @@ def guess_title(pdf_path: Path, first_page_text: str) -> str:
     return pdf_path.stem
 
 
-def get_collection():
+def open_raw_collection():
+    """Open the active physical Chroma collection without declaring it ready.
+
+    This is for synchronization and recovery code that must inspect pending
+    writes. Retrieval must use ``get_collection`` so incomplete indexes remain
+    inaccessible to normal queries.
+    """
     import chromadb
 
     client = chromadb.PersistentClient(path=DB_DIR)
@@ -223,11 +229,35 @@ def get_collection():
         raise IndexCompatibilityError("incomplete or corrupted", f"Active Chroma collection {name!r} is missing.")
     else:
         collection = client.get_or_create_collection(name)
+
+    return collection
+
+
+def validate_collection_ready(collection):
+    """Apply compatibility and embedding checks to an opened collection."""
+    metadata = read_metadata(DB_DIR)
     config = get_index_config()
     count = collection.count()
+    check_compatibility(config, metadata, collection_count=count)
+    if count:
+        try:
+            sample = collection.get(limit=1, include=["embeddings"])
+            dimension = len(sample["embeddings"][0])
+        except Exception as exc:
+            raise IndexCompatibilityError("incomplete or corrupted", f"Cannot validate stored embedding dimension: {exc}") from exc
+        if dimension != config.embedding_dimension:
+            raise IndexCompatibilityError("configuration mismatch", f"Stored collection dimension {dimension} does not match configured dimension {config.embedding_dimension}.")
+    return collection
+
+
+def get_collection():
+    """Open the active collection only when it is safe for retrieval."""
+    collection = open_raw_collection()
     try:
-        check_compatibility(config, metadata, collection_count=count)
+        return validate_collection_ready(collection)
     except IndexCompatibilityError as exc:
+        metadata = read_metadata(DB_DIR)
+        count = collection.count()
         if metadata is None and count:
             try:
                 from src.sync import _initial_recovery_state, _read_manifest
@@ -240,7 +270,7 @@ def get_collection():
                             "recovering", "The initial index is incomplete and awaiting recovery. "
                             "Run `python ask.py sync` before asking questions."
                         ) from exc
-                    status = "configuration mismatch" if "configuration differs" in reason else "incomplete or corrupted"
+                    status = "configuration mismatch" if "configuration" in reason else "incomplete or corrupted"
                     raise IndexCompatibilityError(
                         status,
                         f"The initial index is incomplete and cannot be recovered safely: {reason}. "
@@ -251,15 +281,6 @@ def get_collection():
             except Exception:
                 pass
         raise
-    if count:
-        try:
-            sample = collection.get(limit=1, include=["embeddings"])
-            dimension = len(sample["embeddings"][0])
-        except Exception as exc:
-            raise IndexCompatibilityError("incomplete or corrupted", f"Cannot validate stored embedding dimension: {exc}") from exc
-        if dimension != config.embedding_dimension:
-            raise IndexCompatibilityError("configuration mismatch", f"Stored collection dimension {dimension} does not match configured dimension {config.embedding_dimension}.")
-    return collection
 
 
 def ingest_folder(papers_dir: str = "papers"):
