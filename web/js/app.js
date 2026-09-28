@@ -104,16 +104,30 @@ function scrollToLatest() {
   conversation.scrollTop = conversation.scrollHeight;
 }
 
+function createScholarFrog(state = "idle") {
+  const frog = document.createElement("span");
+  frog.className = "scholar-frog";
+  frog.setAttribute("aria-hidden", "true");
+  frog.dataset.state = state;
+  return frog;
+}
+
+function setScholarFrogState(frog, state) {
+  frog.dataset.state = state;
+}
+
 function appendMessage(role, text) {
   const row = document.createElement("div");
   row.className = `message-row ${role}`;
   const bubble = document.createElement("div");
   bubble.className = "bubble";
   bubble.textContent = text;
+  const frog = role === "assistant" ? createScholarFrog() : null;
+  if (frog) row.append(frog);
   row.append(bubble);
   $("conversation").append(row);
   scrollToLatest();
-  return bubble;
+  return {bubble, frog};
 }
 
 function renderAnswer(data, bubble, turn) {
@@ -211,17 +225,20 @@ $("question-form").addEventListener("submit", async (event) => {
   input.disabled = true;
   input.value = "";
   appendMessage("user", question);
-  const response = appendMessage("assistant", "Searching papers and checking citations…");
+  const {bubble: response, frog} = appendMessage("assistant", "Searching papers and checking citations…");
   response.classList.add("pending");
+  setScholarFrogState(frog, "talking");
   const turn = ++turnNumber;
   try {
     const data = await postJson("/api/ask", {question});
     renderAnswer(data, response, turn);
+    setScholarFrogState(frog, data.status === "answered" ? "idle" : "crying");
   } catch (error) {
     response.classList.add("error");
     response.textContent = error.message;
   } finally {
     response.classList.remove("pending");
+    if (frog.dataset.state === "talking") setScholarFrogState(frog, "idle");
     button.disabled = false;
     input.disabled = false;
     input.focus();

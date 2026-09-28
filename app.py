@@ -107,6 +107,9 @@ class Handler(BaseHTTPRequestHandler):
             "/": (WEB / "index.html", "text/html; charset=utf-8"),
             "/css/styles.css": (WEB / "css/styles.css", "text/css; charset=utf-8"),
             "/js/app.js": (WEB / "js/app.js", "application/javascript; charset=utf-8"),
+            "/assets/scholar-frog-idle.png": (WEB / "assets/scholar-frog-idle.png", "image/png"),
+            "/assets/scholar-frog-talking.png": (WEB / "assets/scholar-frog-talking.png", "image/png"),
+            "/assets/scholar-frog-crying.png": (WEB / "assets/scholar-frog-crying.png", "image/png"),
         }
         if parsed.path in static:
             path, content_type = static[parsed.path]
