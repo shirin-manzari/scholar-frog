@@ -1,6 +1,7 @@
 """Provider-independent structured generation and citation validation."""
 import json
 import os
+import random
 
 import requests
 from dotenv import load_dotenv
@@ -15,7 +16,17 @@ from src.citations import (
 
 load_dotenv()
 
-ABSTENTION_MESSAGE = "I couldn't find sufficient evidence in the retrieved papers to answer this question reliably."
+ABSTENTION_MESSAGES = (
+    "I’m just a frog. That one’s beyond me.",
+    "I’m just a frog. I can’t answer everything.",
+    "I’m just a frog with a tiny hat. I don’t know.",
+)
+
+
+def _abstention_message() -> str:
+    return random.choice(ABSTENTION_MESSAGES)
+
+
 SYSTEM_PROMPT = """You are Scholar Frog, an academic research assistant. Answer only from
 supplied evidence. Cite each factual claim immediately with exact evidence IDs
 such as [E1]; use multiple IDs when needed. Never invent IDs, documents, or
@@ -167,7 +178,7 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
                     validation_enabled: bool = True) -> GenerationResult:
     if not chunks:
         validation = _not_applicable_validation("Citation validation is not applicable to abstentions.")
-        return GenerationResult(ABSTENTION_MESSAGE, "", [], validation, 0, [],
+        return GenerationResult(_abstention_message(), "", [], validation, 0, [],
                                 GenerationStatus.ABSTAINED, AbstentionReason.NO_RELEVANT_EVIDENCE)
 
     evidence = assign_evidence(chunks)
@@ -198,7 +209,7 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
             errors.append(parse_error)
         elif status is GenerationStatus.ABSTAINED:
             validation = _not_applicable_validation("Citation validation is not applicable to abstentions.")
-            return GenerationResult(ABSTENTION_MESSAGE, original, evidence, validation, attempts,
+            return GenerationResult(_abstention_message(), original, evidence, validation, attempts,
                                     errors, GenerationStatus.ABSTAINED, reason)
         else:
             validation = validate_citations(answer, evidence, coverage_enabled)

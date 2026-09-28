@@ -1,7 +1,7 @@
 import json
 
 from src.citations import GenerationStatus, assign_evidence, validate_citations
-from src.generate import generate_answer
+from src.generate import ABSTENTION_MESSAGES, generate_answer
 
 
 def chunks():
@@ -130,7 +130,7 @@ def test_legitimate_abstention_is_controlled_and_skips_validation_and_retry(monk
     assert not result.validation.references_valid
     assert result.validation.outcome == "not_applicable"
     assert result.regeneration_attempts == 0
-    assert "retrieved papers" in result.answer
+    assert result.answer in ABSTENTION_MESSAGES
     assert len(calls) == 1
 
 
@@ -141,6 +141,19 @@ def test_empty_retrieval_abstains_without_calling_backend(monkeypatch):
     assert result.abstention_reason.value == "no_relevant_evidence"
     assert result.validation.outcome == "not_applicable"
     assert result.regeneration_attempts == 0
+    assert result.answer in ABSTENTION_MESSAGES
+
+
+def test_abstention_dialogue_is_selected_for_each_request(monkeypatch):
+    messages = iter(ABSTENTION_MESSAGES)
+    monkeypatch.setattr("src.generate.random.choice", lambda options: next(messages))
+    monkeypatch.setattr("src.generate._call_backend", lambda *args: _abstention())
+    answers = [
+        generate_answer("Q?", []).answer,
+        generate_answer("Q?", chunks(), max_retries=0).answer,
+        generate_answer("Q?", []).answer,
+    ]
+    assert answers == list(ABSTENTION_MESSAGES)
 
 
 def test_substantive_uncited_answer_fails_normal_validation_and_retries(monkeypatch):
@@ -198,7 +211,7 @@ def test_conflicting_evidence_abstention_hides_model_claims(monkeypatch):
     result = generate_answer("Q?", chunks(), max_retries=2)
     assert result.status is GenerationStatus.ABSTAINED
     assert result.abstention_reason.value == "conflicting_evidence"
-    assert result.answer == "I couldn't find sufficient evidence in the retrieved papers to answer this question reliably."
+    assert result.answer in ABSTENTION_MESSAGES
     assert result.validation.outcome == "not_applicable"
 
 
