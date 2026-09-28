@@ -20,7 +20,7 @@ console = Console()
 
 
 def sync_main(argv=None):
-    parser = argparse.ArgumentParser(description="Synchronize the paper library and search index.")
+    parser = argparse.ArgumentParser(description="Synchronize the Scholar Frog paper library and search index.")
     parser.add_argument("--papers", default="papers", help="Paper library directory")
     parser.add_argument("--dry-run", action="store_true", help="Preview without changing the index")
     parser.add_argument("--force", action="store_true",
@@ -61,7 +61,7 @@ def main():
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         return sync_main(sys.argv[2:])
 
-    parser = argparse.ArgumentParser(description="Ask a question across your PDF papers.")
+    parser = argparse.ArgumentParser(description="Ask Scholar Frog a question across your PDF papers.")
     try:
         config = RetrievalConfig.from_env()
     except ValueError as exc:
@@ -160,11 +160,11 @@ def main():
         return 1
 
     if result.status is GenerationStatus.ABSTAINED:
-        console.print(Panel(Markdown(result.answer), title="No supported answer", border_style="yellow"))
+        console.print(Panel(Markdown(result.answer), title="Scholar Frog: No supported answer", border_style="yellow"))
     elif result.status is GenerationStatus.VALIDATION_FAILED:
-        console.print(Panel(Markdown(result.answer), title="Answer unavailable", border_style="red"))
+        console.print(Panel(Markdown(result.answer), title="Scholar Frog: Answer unavailable", border_style="red"))
     else:
-        console.print(Panel(Markdown(result.answer), title="Answer", border_style="green"))
+        console.print(Panel(Markdown(result.answer), title="Scholar Frog", border_style="green"))
     if result.status is GenerationStatus.ANSWERED and result.validation.references_valid:
         console.print("\n[bold]References:[/bold]")
         for item in result.validation.valid_evidence:
@@ -192,7 +192,7 @@ def main():
 
 
 def index_main(argv=None):
-    parser = argparse.ArgumentParser(description="Inspect and manage the versioned search index.")
+    parser = argparse.ArgumentParser(description="Inspect and manage the Scholar Frog search index.")
     parser.add_argument("action", choices=("info", "check", "rebuild"))
     parser.add_argument("--papers", default="papers", help="Paper library directory")
     parser.add_argument("--embedding-model")
@@ -205,12 +205,12 @@ def index_main(argv=None):
     try:
         if args.action == "rebuild":
             for env_name, value in (
-                ("SCHOLARQ_EMBEDDING_MODEL", args.embedding_model),
-                ("SCHOLARQ_EMBEDDING_REVISION", args.embedding_revision),
-                ("SCHOLARQ_EMBEDDING_DIMENSION", args.embedding_dimension),
-                ("SCHOLARQ_CHUNK_SIZE", args.chunk_size),
-                ("SCHOLARQ_CHUNK_OVERLAP", args.chunk_overlap),
-                ("SCHOLARQ_NORMALIZE_EMBEDDINGS", args.normalize_embeddings),
+                ("SCHOLAR_FROG_EMBEDDING_MODEL", args.embedding_model),
+                ("SCHOLAR_FROG_EMBEDDING_REVISION", args.embedding_revision),
+                ("SCHOLAR_FROG_EMBEDDING_DIMENSION", args.embedding_dimension),
+                ("SCHOLAR_FROG_CHUNK_SIZE", args.chunk_size),
+                ("SCHOLAR_FROG_CHUNK_OVERLAP", args.chunk_overlap),
+                ("SCHOLAR_FROG_NORMALIZE_EMBEDDINGS", args.normalize_embeddings),
             ):
                 if value is not None:
                     os.environ[env_name] = str(value).lower() if isinstance(value, bool) else str(value)

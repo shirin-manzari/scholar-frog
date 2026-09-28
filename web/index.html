@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Scholar Frog</title>
+  <meta name="application-name" content="Scholar Frog">
+  <meta name="description" content="Ask questions about research papers and trace answers to their sources.">
+  <link rel="stylesheet" href="/css/styles.css">
+  <script src="/js/app.js" defer></script>
+</head>
+<body>
+  <main class="layout">
+    <aside class="sidebar">
+      <section class="paper-section" aria-labelledby="library-heading">
+        <header class="brand">
+          <h1>Scholar <span>Frog</span></h1>
+          <hr>
+        </header>
+        <h2 id="library-heading">Paper library</h2>
+        <ol id="paper-list" class="paper-list" role="list"><li class="empty-library">Loading PDFs…</li></ol>
+      </section>
+      <section class="sidebar-actions" aria-label="Manage papers">
+        <label for="pdf-file" class="upload-label">Add a PDF</label>
+        <input id="pdf-file" type="file" accept=".pdf,application/pdf">
+        <button id="sync-button" class="secondary-button" type="button">Sync library</button>
+        <p class="help-text">You can also put PDFs in the <code>papers/</code> folder, then sync.</p>
+        <p id="library-message" class="message" role="status" aria-live="polite"></p>
+      </section>
+    </aside>
+
+    <section class="workspace" aria-label="Scholar Frog research conversation">
+      <div id="conversation" class="conversation" role="log" aria-live="polite" aria-relevant="additions text"></div>
+      <div class="composer-area">
+        <form id="question-form" class="question-form">
+          <label class="sr-only" for="question">Your question</label>
+          <textarea id="question" name="question" rows="2" maxlength="4000" placeholder="Ask Scholar Frog about your papers…" required></textarea>
+          <button id="ask-button" type="submit">Send</button>
+        </form>
+      </div>
+    </section>
+  </main>
+</body>
+</html>

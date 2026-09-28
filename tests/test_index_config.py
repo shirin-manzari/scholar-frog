@@ -10,13 +10,26 @@ from src.index_config import (
 
 
 def test_configuration_defaults_validation_and_env_precedence(tmp_path, monkeypatch):
-    path = tmp_path / "scholarq.toml"
+    path = tmp_path / "scholar-frog.toml"
     path.write_text('[index]\nchunk_size = 900\nchunk_overlap = 120\n')
-    monkeypatch.setenv("SCHOLARQ_CHUNK_SIZE", "1000")
+    monkeypatch.setenv("SCHOLAR_FROG_CHUNK_SIZE", "1000")
     config = load_index_config(config_path=path, overrides={"chunk_overlap": 99})
     assert (config.chunk_size, config.chunk_overlap) == (1000, 99)
     with pytest.raises(ValueError, match="chunk_overlap"):
         IndexConfig(chunk_size=100, chunk_overlap=100)
+
+
+def test_legacy_configuration_names_remain_readable(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "scholarq.toml").write_text("[index]\nchunk_size = 900\n")
+    monkeypatch.setenv("SCHOLARQ_CHUNK_SIZE", "950")
+    assert load_index_config().chunk_size == 950
+    (tmp_path / "scholar-frog.toml").write_text("[index]\nchunk_size = 1000\n")
+    monkeypatch.delenv("SCHOLARQ_CHUNK_SIZE")
+    assert load_index_config().chunk_size == 1000
+    monkeypatch.setenv("SCHOLARQ_CHUNK_SIZE", "950")
+    monkeypatch.setenv("SCHOLAR_FROG_CHUNK_SIZE", "1050")
+    assert load_index_config().chunk_size == 1050
 
 
 def test_fingerprints_are_canonical_and_only_index_settings_affect_them():

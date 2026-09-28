@@ -1,52 +1,35 @@
-# ScholarQ
+# Scholar Frog
 
-Ask questions about local research PDFs and get answers with paper and page
-references. Requires Python 3.10+.
+Ask questions about local PDFs and get answers linked to paper excerpts. Scholar Frog
+runs ingestion and retrieval locally; Ollama is the default answer model.
 
-## Quick start
+## Start
+
+Requires Python 3.10+ and Ollama.
 
 ```sh
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
 cp .env.example .env
 ollama pull qwen3:8b
+python app.py
 ```
 
-Put text-based PDFs in `papers/`, start Ollama, then run:
+Open <http://127.0.0.1:8765>, add text-based PDFs, sync the library, and ask a
+question. Make sure Ollama is running. The first sync may download local models.
+
+For the CLI, put PDFs in `papers/` and run:
 
 ```sh
 python ask.py "What methods do these papers use?"
 ```
 
-PDFs, embeddings, and the index remain local. Scanned PDFs are unsupported.
-OpenAI and Anthropic are optional answer-generation backends; configure their
-API keys in `.env` and install the matching package.
+Answers show evidence references you can open in the source PDFs. If the excerpts
+do not support an answer, Scholar Frog says so. Check cited passages before using
+an answer in academic work. Scanned PDFs need OCR and are not supported.
 
-## Common commands
-
-```sh
-python ask.py --ingest-only
-python ask.py --top-k 8 "Compare the methods"
-python ask.py --debug-citations "Question"
-python ask.py sync --dry-run
-python ask.py index info
-python ask.py index check
-python ask.py index rebuild
-```
-
-Search defaults to semantic retrieval, BM25, and reranking. Changed PDFs are
-synced automatically. `--compare` compares retrieval modes.
-
-## Answers and index
-
-Substantive answers require valid `[E1]`-style references. ScholarQ checks that
-references exist, but does not verify factual support. If evidence is
-insufficient, it returns a fixed abstention without references. Malformed or
-uncited answers receive up to one repair attempt by default; unresolved
-failures are hidden.
-
-Configure indexing in `scholarq.toml` (copy `scholarq.toml.example`). Precedence
-is defaults, TOML, environment variables, then supported CLI options. Changes
-to embedding, chunking, or extraction settings require a rebuild. Rebuild
-verifies a replacement before activation and retains the prior index. Legacy
-indexes must be rebuilt explicitly.
+Optional index settings go in `scholar-frog.toml` (see
+`scholar-frog.toml.example`) or `SCHOLAR_FROG_` environment variables. The old
+`scholarq.toml` and `SCHOLARQ_` names still work. OpenAI and Anthropic are
+optional backends configured in `.env` with their SDKs installed separately.

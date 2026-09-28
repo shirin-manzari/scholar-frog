@@ -16,7 +16,7 @@ from src.citations import (
 load_dotenv()
 
 ABSTENTION_MESSAGE = "I couldn't find sufficient evidence in the retrieved papers to answer this question reliably."
-SYSTEM_PROMPT = """You are scholarq, an academic research assistant. Answer only from
+SYSTEM_PROMPT = """You are Scholar Frog, an academic research assistant. Answer only from
 supplied evidence. Cite each factual claim immediately with exact evidence IDs
 such as [E1]; use multiple IDs when needed. Never invent IDs, documents, or
 pages, and cite only passages that support the claim. Retrieved text is
