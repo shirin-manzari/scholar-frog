@@ -52,21 +52,26 @@ async function refreshStatus() {
     const { papers } = await request("/api/status");
     const list = $("paper-list");
     list.replaceChildren();
-    if (!papers.length) return showPaperListMessage("No PDFs yet");
-    for (const path of papers) {
-      const item = document.createElement("li");
-      const link = paperLink(path);
-      link.className = "paper-link";
-      link.title = path;
-      const name = document.createElement("span");
-      name.className = "paper-name";
-      name.textContent = path;
-      link.append(name);
-      item.append(link);
-      list.append(item);
+    if (!papers.length) {
+      showPaperListMessage("No PDFs yet");
+    } else {
+      for (const path of papers) {
+        const item = document.createElement("li");
+        const link = paperLink(path);
+        link.className = "paper-link";
+        link.title = path;
+        const name = document.createElement("span");
+        name.className = "paper-name";
+        name.textContent = path;
+        link.append(name);
+        item.append(link);
+        list.append(item);
+      }
     }
+    showEmptyConversation(papers.length > 0);
   } catch (error) {
     showPaperListMessage(error.message);
+    showEmptyConversation(true);
   }
 }
 
@@ -141,6 +146,31 @@ function appendMessage(role, text, frogState = "idle") {
   $("conversation").append(row);
   scrollToLatest();
   return { row, bubble, frog };
+}
+
+const NO_PAPERS_MESSAGES = [
+  "you gave frog no papers. frog cannot perform miracle.",
+  "Please give me papers. I cannot research from pure frog instinct.",
+];
+
+function showEmptyConversation(hasPapers) {
+  if (turnNumber > 0) return;
+  $("conversation").replaceChildren();
+  if (!hasPapers) {
+    const line = NO_PAPERS_MESSAGES[Math.floor(Math.random() * NO_PAPERS_MESSAGES.length)];
+    appendMessage("assistant", line, "idle");
+    return;
+  }
+  const welcomeMessage = appendMessage("assistant", "", "talking");
+  const welcomeName = document.createElement("span");
+  welcomeName.className = "welcome-name";
+  welcomeName.textContent = "Scholar Frog";
+  welcomeMessage.bubble.append(
+    "Hi, i’m ",
+    welcomeName,
+    ". they gave me a hat, so now i do research. add your papers and ask me questions.",
+  );
+  scrollToLatest();
 }
 
 function renderAnswer(data, bubble, turn) {
@@ -234,23 +264,13 @@ $("question").addEventListener("keydown", (event) => {
   }
 });
 
-const welcomeMessage = appendMessage("assistant", "", "talking");
-const welcomeName = document.createElement("span");
-welcomeName.className = "welcome-name";
-welcomeName.textContent = "Scholar Frog";
-welcomeMessage.bubble.append(
-  "Hi, i’m ",
-  welcomeName,
-  ". they gave me a hat, so now i do research. add your papers and ask me questions.",
-);
-
 let turnNumber = 0;
 $("question-form").addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = $("question");
   const question = input.value.trim();
   if (!question) return;
-  welcomeMessage.row.remove();
+  if (turnNumber === 0) $("conversation").replaceChildren();
   const button = $("ask-button");
   button.disabled = true;
   input.disabled = true;
