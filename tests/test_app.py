@@ -75,3 +75,27 @@ def test_ask_excludes_removed_sources_but_keeps_existing_alias(tmp_path, monkeyp
 
     assert [chunk["source"] for chunk in observed] == ["kept.pdf"]
     assert observed[0]["metadata"]["source"] == "kept.pdf"
+
+
+def test_ask_passes_selected_paper_and_rejects_missing_selection(tmp_path, monkeypatch):
+    (tmp_path / "one.pdf").write_bytes(b"%PDF-")
+    monkeypatch.setattr(app, "PAPERS", tmp_path)
+    observed = []
+
+    def fake_retrieve(question, top_k, paper):
+        observed.append((question, paper))
+        return []
+
+    monkeypatch.setattr(app, "retrieve", fake_retrieve)
+    monkeypatch.setattr(app, "generate_answer", lambda question, chunks: SimpleNamespace(
+        status=GenerationStatus.ABSTAINED, answer="No answer",
+        validation=SimpleNamespace(
+            valid_evidence=[], coverage_warnings=[], semantic_support="not_checked"
+        ),
+    ))
+
+    app.ask_question("Summarize this paper.", paper="one.pdf")
+    assert observed == [("Summarize this paper.", "one.pdf")]
+    with pytest.raises(ValueError, match="no longer in the library"):
+        app.ask_question("Summarize this paper.", paper="missing.pdf")
+    assert len(observed) == 1

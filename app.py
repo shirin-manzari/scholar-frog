@@ -67,13 +67,15 @@ def _available_chunks(chunks, paper_paths):
     return available
 
 
-def ask_question(question):
+def ask_question(question, paper=None):
     paper_paths = set(library_status()["papers"])
     if not paper_paths:
         return {"status": "no_papers", "answer": "", "references": [], "warnings": []}
+    if paper is not None and paper not in paper_paths:
+        raise ValueError("Selected paper is no longer in the library. Choose another paper.")
     config = RetrievalConfig.from_env()
     chunks = _available_chunks(
-        retrieve(question, top_k=config.final_results), paper_paths
+        retrieve(question, top_k=config.final_results, paper=paper), paper_paths
     )
     result = generate_answer(question, chunks)
     cited = result.validation.valid_evidence if result.status is GenerationStatus.ANSWERED else []
@@ -194,7 +196,10 @@ class Handler(BaseHTTPRequestHandler):
             question = payload.get("question", "")
             if not isinstance(question, str) or not question.strip() or len(question) > 4000:
                 return self.send_json({"error": "Enter a question of up to 4,000 characters."}, 400)
-            return self.send_json(ask_question(question.strip()))
+            paper = payload.get("paper")
+            if paper is not None and (not isinstance(paper, str) or not paper):
+                return self.send_json({"error": "Select a valid paper."}, 400)
+            return self.send_json(ask_question(question.strip(), paper=paper))
         except SyncDeletionConfirmationRequired as exc:
             return self.send_json({
                 "error": str(exc), "code": "delete_confirmation_required",

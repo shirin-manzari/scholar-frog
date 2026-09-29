@@ -32,6 +32,12 @@
     <section class="workspace" aria-label="Scholar Frog research conversation">
       <div id="conversation" class="conversation" role="log" aria-live="polite" aria-relevant="additions text"></div>
       <div class="composer-area">
+        <div class="paper-selection">
+          <label for="paper-select">Ask about</label>
+          <select id="paper-select" aria-label="Paper to ask about">
+            <option value="">All papers</option>
+          </select>
+        </div>
         <form id="question-form" class="question-form">
           <label class="sr-only" for="question">Your question</label>
           <textarea id="question" name="question" rows="2" maxlength="4000" placeholder="Ask Scholar Frog about your papers…" required></textarea>

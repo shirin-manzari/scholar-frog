@@ -219,6 +219,13 @@ function renderMarkdownAnswer(container, markdown, references, turn) {
 async function refreshStatus() {
   try {
     const { papers } = await request("/api/status");
+    const selector = $("paper-select");
+    const previousSelection = selector.value;
+    selector.replaceChildren(new Option("All papers", ""));
+    for (const path of papers) selector.add(new Option(path, path));
+    selector.value = papers.includes(previousSelection)
+      ? previousSelection
+      : papers.length === 1 ? papers[0] : "";
     const list = $("paper-list");
     list.replaceChildren();
     if (!papers.length) {
@@ -478,19 +485,26 @@ $("question-form").addEventListener("submit", async (event) => {
   const input = $("question");
   const question = input.value.trim();
   if (!question) return;
+  const paper = $("paper-select").value || null;
   if (turnNumber === 0) $("conversation").replaceChildren();
   const button = $("ask-button");
   button.disabled = true;
   input.disabled = true;
   input.value = "";
-  appendMessage("user", question);
+  const userMessage = appendMessage("user", question);
+  if (paper) {
+    const label = document.createElement("span");
+    label.className = "question-paper";
+    label.textContent = `Paper: ${paper}`;
+    userMessage.bubble.prepend(label);
+  }
   const { bubble: response, frog } = appendMessage("assistant", "");
   const stopThinkingDialogue = startThinkingDialogue(response);
   response.classList.add("pending");
   setScholarFrogState(frog, "talking");
   const turn = ++turnNumber;
   try {
-    const data = await postJson("/api/ask", { question });
+    const data = await postJson("/api/ask", { question, paper });
     stopThinkingDialogue();
     if (data.status === "no_papers") {
       response.textContent = randomNoPapersMessage();
