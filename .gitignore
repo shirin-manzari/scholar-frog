@@ -9,5 +9,6 @@ venv/
 AGENTS.md
 ARCHITECTURE.md
 .DS_Store
+*.ses
 README.md
 LICENSE
