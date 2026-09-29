@@ -72,10 +72,9 @@ def ask_question(question):
     if not paper_paths:
         return {"status": "no_papers", "answer": "", "references": [], "warnings": []}
     config = RetrievalConfig.from_env()
-    candidate_count = max(config.final_results, config.dense_candidates,
-                          config.bm25_candidates, config.rerank_candidates)
-    chunks = _available_chunks(retrieve(question, top_k=candidate_count), paper_paths)
-    chunks = chunks[:config.final_results]
+    chunks = _available_chunks(
+        retrieve(question, top_k=config.final_results), paper_paths
+    )
     result = generate_answer(question, chunks)
     cited = result.validation.valid_evidence if result.status is GenerationStatus.ANSWERED else []
     return {

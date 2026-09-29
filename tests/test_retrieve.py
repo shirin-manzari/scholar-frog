@@ -39,6 +39,8 @@ def reset_retrieval_state(monkeypatch):
     for name in (
         "RETRIEVAL_MODE", "DENSE_CANDIDATES", "BM25_CANDIDATES", "RRF_K",
         "RERANK_CANDIDATES", "FINAL_RESULTS", "RERANKER_MODEL",
+        "RERANKER_MIN_SCORE", "MAX_CHUNKS_PER_PAPER", "MMR_LAMBDA",
+        "ADJACENT_CHUNKS",
     ):
         monkeypatch.delenv(name, raising=False)
     retrieval._bm25_cache = None
@@ -281,11 +283,143 @@ def test_candidate_counts_and_final_results_are_configurable(monkeypatch):
     monkeypatch.setenv("BM25_CANDIDATES", "13")
     monkeypatch.setenv("RERANK_CANDIDATES", "14")
     monkeypatch.setenv("FINAL_RESULTS", "4")
+    monkeypatch.setenv("RERANKER_MIN_SCORE", "0.2")
+    monkeypatch.setenv("MAX_CHUNKS_PER_PAPER", "3")
+    monkeypatch.setenv("MMR_LAMBDA", "0.6")
+    monkeypatch.setenv("ADJACENT_CHUNKS", "2")
 
     config = retrieval.RetrievalConfig.from_env()
 
     assert (config.dense_candidates, config.bm25_candidates) == (12, 13)
     assert (config.rerank_candidates, config.final_results) == (14, 4)
+    assert config.reranker_min_score == 0.2
+    assert config.max_chunks_per_paper == 3
+    assert config.mmr_lambda == 0.6
+    assert config.adjacent_chunks == 2
+
+
+@pytest.mark.parametrize("name,value", [
+    ("RERANKER_MIN_SCORE", "nan"),
+    ("MAX_CHUNKS_PER_PAPER", "0"),
+    ("MMR_LAMBDA", "1.1"),
+    ("ADJACENT_CHUNKS", "-1"),
+])
+def test_invalid_relevance_selection_configuration_is_rejected(monkeypatch, name, value):
+    monkeypatch.setenv(name, value)
+
+    with pytest.raises(ValueError, match=name):
+        retrieval.RetrievalConfig.from_env()
+
+
+def _selection_result(chunk_id, text, score, document_id, source, page=1,
+                      chunk_index=None):
+    metadata = {
+        "document_id": document_id,
+        "file_hash": document_id,
+        "source": source,
+        "title": source,
+        "section": "Results",
+        "page": page,
+    }
+    if chunk_index is not None:
+        metadata["chunk_index"] = chunk_index
+    return {
+        "id": chunk_id,
+        "text": text,
+        "metadata": metadata,
+        "source": source,
+        "title": source,
+        "section": "Results",
+        "page": page,
+        "distance": None,
+        "dense_distance": None,
+        "dense_score": None,
+        "bm25_score": None,
+        "rrf_score": 0.01,
+        "reranker_score": score,
+    }
+
+
+def test_threshold_removes_weak_reranker_results_and_can_return_empty():
+    candidates = [
+        _selection_result("strong", "direct answer", 0.8, "doc-a", "a.pdf"),
+        _selection_result("weak", "unrelated text", 0.04, "doc-b", "b.pdf"),
+    ]
+
+    selected = retrieval._select_context(
+        candidates, candidates, top_k=5, min_score=0.05,
+        max_per_paper=2, diversity=0.75, adjacent_chunks=0,
+    )
+    assert [item["id"] for item in selected] == ["strong"]
+    assert retrieval._select_context(
+        candidates[1:], candidates, top_k=5, min_score=0.05,
+        max_per_paper=2, diversity=0.75, adjacent_chunks=0,
+    ) == []
+
+
+def test_mmr_prefers_diverse_evidence_and_enforces_paper_cap():
+    candidates = [
+        _selection_result("a1", "alpha beta gamma result", 0.90, "doc-a", "a.pdf"),
+        _selection_result("a2", "alpha beta gamma result repeated", 0.89, "doc-a", "a.pdf"),
+        _selection_result("b1", "independent delta evidence", 0.80, "doc-b", "b.pdf"),
+    ]
+
+    diverse = retrieval._mmr_select(
+        candidates, limit=2, diversity=0.4, max_per_paper=3
+    )
+    capped = retrieval._mmr_select(
+        candidates, limit=3, diversity=1.0, max_per_paper=1
+    )
+
+    assert [item["id"] for item in diverse] == ["a1", "b1"]
+    assert [item["id"] for item in capped] == ["a1", "b1"]
+
+
+def test_adjacent_expansion_adds_neighbor_within_budget_and_paper_cap():
+    digest = "a" * 64
+    version = "b" * 16
+    corpus = [
+        _selection_result(
+            f"{digest}-1-{index}-{version}", text, None, digest, "paper.pdf",
+            chunk_index=index,
+        )
+        for index, text in enumerate(("before", "relevant anchor", "after"))
+    ]
+    anchor = {**corpus[1], "reranker_score": 0.9}
+
+    selected = retrieval._select_context(
+        [anchor], corpus, top_k=3, min_score=0.05,
+        max_per_paper=2, diversity=0.75, adjacent_chunks=1,
+    )
+
+    assert [item["text"] for item in selected] == ["relevant anchor", "after"]
+    assert selected[0]["selection_reason"] == "anchor"
+    assert selected[1]["selection_reason"] == "adjacent"
+    assert selected[1]["adjacent_to"] == anchor["id"]
+
+
+def test_default_rerank_pipeline_returns_no_evidence_below_threshold(
+    collection, monkeypatch
+):
+    monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
+    monkeypatch.setattr(retrieval, "get_embedding_model", lambda: FakeEmbeddingModel())
+    monkeypatch.setattr(
+        retrieval, "get_index_config",
+        lambda: __import__("src.index_config", fromlist=["IndexConfig"]).IndexConfig(
+            embedding_dimension=2
+        ),
+    )
+    monkeypatch.setattr(retrieval, "_get_committed_snapshot", committed_snapshot)
+
+    class WeakCrossEncoder:
+        def predict(self, pairs, batch_size, show_progress_bar):
+            return [0.01 for _ in pairs]
+
+    monkeypatch.setattr(retrieval, "_create_reranker", lambda model_name: WeakCrossEncoder())
+
+    assert retrieval.retrieve(
+        "unrelated question", top_k=5, retrieval_mode="hybrid-rerank"
+    ) == []
 
 
 def test_generation_context_uses_retrieved_citation_metadata(collection, monkeypatch):

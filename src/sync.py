@@ -497,6 +497,7 @@ def _prepare(item: dict, digest: str, paths: list[str]) -> dict:
             metadatas.append({
                 "source": paths[0], "source_paths": json.dumps(paths),
                 "title": title, "section": section, "page": int(page),
+                "chunk_index": index,
                 "file_hash": digest, "document_id": digest,
             })
     vectors = []

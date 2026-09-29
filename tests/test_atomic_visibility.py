@@ -92,6 +92,10 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setattr(sync, "_prepare", lambda item, digest, paths: _prepare(item, digest, paths))
     for name in ("DENSE_CANDIDATES", "BM25_CANDIDATES", "RERANK_CANDIDATES", "FINAL_RESULTS"):
         monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("RERANKER_MIN_SCORE", "0")
+    monkeypatch.setenv("MAX_CHUNKS_PER_PAPER", "100")
+    monkeypatch.setenv("MMR_LAMBDA", "1")
+    monkeypatch.setenv("ADJACENT_CHUNKS", "0")
     return papers, db, collection
 
 

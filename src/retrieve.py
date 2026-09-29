@@ -1,5 +1,6 @@
 import hashlib
 import json
+import math
 import os
 import re
 from dataclasses import dataclass
@@ -25,6 +26,10 @@ class RetrievalConfig:
     rerank_candidates: int
     final_results: int
     reranker_model: str
+    reranker_min_score: float
+    max_chunks_per_paper: int
+    mmr_lambda: float
+    adjacent_chunks: int
 
     @classmethod
     def from_env(cls):
@@ -42,6 +47,10 @@ class RetrievalConfig:
             rerank_candidates=_positive_int("RERANK_CANDIDATES", 20),
             final_results=_positive_int("FINAL_RESULTS", 5),
             reranker_model=reranker_model,
+            reranker_min_score=_finite_float("RERANKER_MIN_SCORE", 0.05),
+            max_chunks_per_paper=_positive_int("MAX_CHUNKS_PER_PAPER", 2),
+            mmr_lambda=_bounded_float("MMR_LAMBDA", 0.75, 0.0, 1.0),
+            adjacent_chunks=_non_negative_int("ADJACENT_CHUNKS", 1),
         )
 
 
@@ -53,6 +62,35 @@ def _positive_int(name: str, default: int) -> int:
         raise ValueError(f"{name} must be a positive integer") from exc
     if parsed <= 0:
         raise ValueError(f"{name} must be a positive integer")
+    return parsed
+
+
+def _non_negative_int(name: str, default: int) -> int:
+    value = os.getenv(name)
+    try:
+        parsed = int(value) if value is not None else default
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a non-negative integer") from exc
+    if parsed < 0:
+        raise ValueError(f"{name} must be a non-negative integer")
+    return parsed
+
+
+def _finite_float(name: str, default: float) -> float:
+    value = os.getenv(name)
+    try:
+        parsed = float(value) if value is not None else default
+    except ValueError as exc:
+        raise ValueError(f"{name} must be a finite number") from exc
+    if not math.isfinite(parsed):
+        raise ValueError(f"{name} must be a finite number")
+    return parsed
+
+
+def _bounded_float(name: str, default: float, minimum: float, maximum: float) -> float:
+    parsed = _finite_float(name, default)
+    if not minimum <= parsed <= maximum:
+        raise ValueError(f"{name} must be between {minimum:g} and {maximum:g}")
     return parsed
 
 
@@ -278,6 +316,161 @@ def _rerank(question: str, candidates: list[dict], model_name: str) -> list[dict
     return results
 
 
+def _paper_key(result: dict) -> str:
+    metadata = result.get("metadata") or {}
+    return str(
+        metadata.get("document_id")
+        or metadata.get("file_hash")
+        or result.get("source")
+        or result.get("id")
+    )
+
+
+def _text_similarity(left: str, right: str) -> float:
+    left_tokens = set(_tokenize(left))
+    right_tokens = set(_tokenize(right))
+    if not left_tokens or not right_tokens:
+        return 0.0
+    return len(left_tokens & right_tokens) / len(left_tokens | right_tokens)
+
+
+def _mmr_select(candidates: list[dict], limit: int, diversity: float,
+                max_per_paper: int) -> list[dict]:
+    """Select relevant but non-redundant anchors using lexical MMR."""
+    if not candidates or limit <= 0:
+        return []
+    raw_scores = [float(candidate["reranker_score"]) for candidate in candidates]
+    low, high = min(raw_scores), max(raw_scores)
+
+    def relevance(candidate):
+        if high == low:
+            return 1.0
+        return (float(candidate["reranker_score"]) - low) / (high - low)
+
+    selected = []
+    per_paper = {}
+    remaining = list(candidates)
+    while remaining and len(selected) < limit:
+        eligible = [
+            candidate for candidate in remaining
+            if per_paper.get(_paper_key(candidate), 0) < max_per_paper
+        ]
+        if not eligible:
+            break
+        scored = []
+        for candidate in eligible:
+            redundancy = max(
+                (_text_similarity(candidate["text"], chosen["text"])
+                 for chosen in selected),
+                default=0.0,
+            )
+            mmr_score = diversity * relevance(candidate) - (1 - diversity) * redundancy
+            scored.append((mmr_score, float(candidate["reranker_score"]), candidate))
+        _, _, chosen = sorted(
+            scored, key=lambda item: (-item[0], -item[1], item[2]["id"])
+        )[0]
+        selected.append(chosen)
+        key = _paper_key(chosen)
+        per_paper[key] = per_paper.get(key, 0) + 1
+        remaining.remove(chosen)
+    return selected
+
+
+_CHUNK_POSITION = re.compile(
+    r"^[0-9a-f]{16,64}-(?P<page>\d+)-(?P<index>\d+)(?:-[0-9a-f]{16})?$",
+    re.IGNORECASE,
+)
+
+
+def _chunk_position(result: dict) -> tuple[int, int] | None:
+    metadata = result.get("metadata") or {}
+    page = metadata.get("page", result.get("page"))
+    index = metadata.get("chunk_index")
+    try:
+        page = int(page)
+        if index is not None:
+            return page, int(index)
+    except (TypeError, ValueError):
+        return None
+    match = _CHUNK_POSITION.match(str(result.get("id", "")))
+    if not match or int(match.group("page")) != page:
+        return None
+    return page, int(match.group("index"))
+
+
+def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
+                    min_score: float, max_per_paper: int, diversity: float,
+                    adjacent_chunks: int) -> list[dict]:
+    """Threshold, diversify, cap, and expand reranked evidence."""
+    relevant = [
+        candidate for candidate in reranked
+        if float(candidate["reranker_score"]) >= min_score
+    ]
+    if not relevant:
+        return []
+
+    anchors = _mmr_select(relevant, top_k, diversity, max_per_paper)
+    if not anchors:
+        return []
+    if adjacent_chunks == 0:
+        return [{**anchor, "selection_reason": "anchor", "adjacent_to": None}
+                for anchor in anchors]
+
+    by_paper = {}
+    for record in corpus:
+        position = _chunk_position(record)
+        if position is not None:
+            by_paper.setdefault(_paper_key(record), []).append((position, record))
+    for records in by_paper.values():
+        records.sort(key=lambda item: (item[0], item[1]["id"]))
+
+    ranked_by_id = {candidate["id"]: candidate for candidate in reranked}
+    selected = []
+    selected_ids = set()
+    per_paper = {}
+
+    def add(result: dict, reason: str, adjacent_to: str | None = None) -> bool:
+        key = _paper_key(result)
+        if (result["id"] in selected_ids or len(selected) >= top_k
+                or per_paper.get(key, 0) >= max_per_paper):
+            return False
+        selected.append({
+            **result,
+            "selection_reason": reason,
+            "adjacent_to": adjacent_to,
+        })
+        selected_ids.add(result["id"])
+        per_paper[key] = per_paper.get(key, 0) + 1
+        return True
+
+    group_size = 1 + (2 * adjacent_chunks)
+    initial_anchor_count = min(len(anchors), max(1, math.ceil(top_k / group_size)))
+    for anchor in anchors[:initial_anchor_count]:
+        if not add(anchor, "anchor"):
+            continue
+        ordered = by_paper.get(_paper_key(anchor), [])
+        anchor_index = next(
+            (i for i, (_, record) in enumerate(ordered) if record["id"] == anchor["id"]),
+            None,
+        )
+        if anchor_index is None:
+            continue
+        for distance in range(1, adjacent_chunks + 1):
+            # Later chunks are preferred because overlap already carries the
+            # preceding chunk's tail into the anchor in the current chunker.
+            for neighbor_index in (anchor_index + distance, anchor_index - distance):
+                if 0 <= neighbor_index < len(ordered):
+                    neighbor = ordered[neighbor_index][1]
+                    neighbor = ranked_by_id.get(neighbor["id"], neighbor)
+                    add(neighbor, "adjacent", anchor["id"])
+
+    # If boundaries or paper caps left reserved neighbor slots unused, fill
+    # them with the remaining diverse, threshold-passing anchors.
+    for anchor in anchors[initial_anchor_count:]:
+        add(anchor, "anchor")
+    return selected
+
+
 def _retrieve_locked(question: str, top_k: int | None = None,
                      retrieval_mode: str | None = None) -> list[dict]:
     """Return ranked Chroma chunks with citation metadata and method scores."""
@@ -308,7 +501,17 @@ def _retrieve_locked(question: str, top_k: int | None = None,
         return fused[:top_k]
 
     candidates = fused[:config.rerank_candidates]
-    return _rerank(question, candidates, config.reranker_model)[:top_k]
+    reranked = _rerank(question, candidates, config.reranker_model)
+    _, corpus, _ = _get_bm25_index(collection, snapshot)
+    return _select_context(
+        reranked,
+        corpus,
+        top_k=top_k,
+        min_score=config.reranker_min_score,
+        max_per_paper=config.max_chunks_per_paper,
+        diversity=config.mmr_lambda,
+        adjacent_chunks=config.adjacent_chunks,
+    )
 
 
 def retrieve(question: str, top_k: int | None = None,
