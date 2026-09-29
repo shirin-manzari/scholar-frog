@@ -54,7 +54,8 @@ function plainDisplayText(text) {
 }
 
 function appendInlineMarkdown(container, text, references, turn) {
-  const tokenPattern = /(\[E\d+\]|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_)/g;
+  const tokenPattern =
+    /(\[E\d+\]|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_)/g;
   let offset = 0;
   for (const match of text.matchAll(tokenPattern)) {
     container.append(document.createTextNode(text.slice(offset, match.index)));
@@ -71,7 +72,9 @@ function appendInlineMarkdown(container, text, references, turn) {
     } else {
       let element;
       let content;
-      const markdownLink = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+      const markdownLink = token.match(
+        /^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/,
+      );
       if (markdownLink) {
         element = document.createElement("a");
         element.href = markdownLink[2];
@@ -173,7 +176,12 @@ function renderMarkdownAnswer(container, markdown, references, turn) {
         container.append(activeList);
       }
       const item = document.createElement("li");
-      appendInlineMarkdown(item, (orderedItem || unorderedItem)[1], references, turn);
+      appendInlineMarkdown(
+        item,
+        (orderedItem || unorderedItem)[1],
+        references,
+        turn,
+      );
       activeList.append(item);
       continue;
     }
@@ -330,10 +338,44 @@ const NO_PAPERS_MESSAGES = [
   "Please give me papers. I cannot research from pure frog instinct.",
 ];
 
+const RERANKING_MESSAGES = [
+  "too many chunks. i choose the ones that smell correct.",
+  "I have summoned several passages. Most of them are useless.",
+  "The chosen evidence will now face trial by frog.",
+  "frog sorting knowledge. extremely advanced technique.",
+];
+
+const GENERATING_MESSAGES = [
+  "I know something now. scary.",
+  "I have seen the texts. I regret learning to read.",
+  "I found something. Now I must turn it into words somehow.",
+];
+
+const ANSWER_READY_MESSAGES = [
+  "Done! frog did academia.",
+  "There. knowledge.",
+  "Answer complete. hat stays on.",
+];
+
+function randomMessage(messages) {
+  return messages[Math.floor(Math.random() * messages.length)];
+}
+
 function randomNoPapersMessage() {
-  return NO_PAPERS_MESSAGES[
-    Math.floor(Math.random() * NO_PAPERS_MESSAGES.length)
-  ];
+  return randomMessage(NO_PAPERS_MESSAGES);
+}
+
+function startThinkingDialogue(bubble) {
+  bubble.textContent = randomMessage(RERANKING_MESSAGES);
+  const generatingTimer = window.setTimeout(() => {
+    bubble.textContent = randomMessage(GENERATING_MESSAGES);
+  }, 1800);
+  return () => window.clearTimeout(generatingTimer);
+}
+
+async function showAnswerReadyDialogue(bubble) {
+  bubble.textContent = randomMessage(ANSWER_READY_MESSAGES);
+  await new Promise((resolve) => window.setTimeout(resolve, 700));
 }
 
 function showWelcomeConversation() {
@@ -442,27 +484,31 @@ $("question-form").addEventListener("submit", async (event) => {
   input.disabled = true;
   input.value = "";
   appendMessage("user", question);
-  const { bubble: response, frog } = appendMessage(
-    "assistant",
-    "Searching papers and checking citations…",
-  );
+  const { bubble: response, frog } = appendMessage("assistant", "");
+  const stopThinkingDialogue = startThinkingDialogue(response);
   response.classList.add("pending");
   setScholarFrogState(frog, "talking");
   const turn = ++turnNumber;
   try {
     const data = await postJson("/api/ask", { question });
+    stopThinkingDialogue();
     if (data.status === "no_papers") {
       response.textContent = randomNoPapersMessage();
       setScholarFrogState(frog, "idle");
       await refreshStatus();
     } else {
+      if (data.status === "answered") {
+        await showAnswerReadyDialogue(response);
+      }
       renderAnswer(data, response, turn);
       setScholarFrogState(frog, data.status === "answered" ? "idle" : "crying");
     }
   } catch (error) {
+    stopThinkingDialogue();
     response.classList.add("error");
     response.textContent = error.message;
   } finally {
+    stopThinkingDialogue();
     response.classList.remove("pending");
     if (frog.dataset.state === "talking") setScholarFrogState(frog, "idle");
     button.disabled = false;

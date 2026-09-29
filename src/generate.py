@@ -17,9 +17,9 @@ from src.citations import (
 load_dotenv()
 
 ABSTENTION_MESSAGES = (
-    "I’m just a frog. That one’s beyond me.",
-    "I’m just a frog. I can’t answer everything.",
-    "I’m just a frog with a tiny hat. I don’t know.",
+    "I found almost nothing. very rude.",
+    "There is evidence, but it is tiny. like me.",
+    "Frog senses weak science.",
 )
 
 
