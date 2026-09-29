@@ -1,7 +1,25 @@
 import json
 
-from src.citations import GenerationStatus, assign_evidence, validate_citations
-from src.generate import ABSTENTION_MESSAGES, generate_answer
+import pytest
+
+from src.citations import (
+    GenerationStatus,
+    assign_evidence,
+    extract_cited_claims,
+    validate_citations,
+)
+from src.generate import (
+    ABSTENTION_MESSAGES,
+    SEMANTIC_VERIFIER_SYSTEM,
+    _parse_semantic_verdict,
+    build_semantic_verification_prompt,
+    generate_answer,
+)
+
+
+@pytest.fixture(autouse=True)
+def semantic_validation_is_explicit_in_existing_tests(monkeypatch):
+    monkeypatch.setenv("CITATION_SEMANTIC_VALIDATION", "false")
 
 
 def chunks():
@@ -54,6 +72,102 @@ def test_markdown_link_label_is_not_an_evidence_reference():
 def test_coverage_warns_on_uncited_claim_not_headings():
     result = validate_citations("## Findings\nThe treatment improved recall.\nAnother claim [E1].", assign_evidence(chunks()))
     assert result.coverage_warnings == ["The treatment improved recall."]
+
+
+def test_cited_claim_extraction_preserves_sentence_evidence_mapping():
+    claims = extract_cited_claims(
+        "## Findings\nRecall improved [E1]. Cost fell with treatment [E2][E1].\n[E2]"
+    )
+
+    assert [(claim.claim_id, claim.text, claim.evidence_ids) for claim in claims] == [
+        ("C1", "Recall improved.", ("E1",)),
+        ("C2", "Cost fell with treatment.", ("E2", "E1")),
+    ]
+
+
+def test_semantic_prompt_includes_only_evidence_attached_to_each_claim():
+    evidence = assign_evidence(chunks())
+    claims = extract_cited_claims("The second result was reported [E2].")
+
+    payload = json.loads(build_semantic_verification_prompt(claims, evidence))
+
+    assert payload["claims"][0]["claim"] == "The second result was reported."
+    assert [item["evidence_id"] for item in payload["claims"][0]["evidence"]] == ["E2"]
+    assert payload["claims"][0]["evidence"][0]["text"] == "A second result."
+
+
+def test_semantic_verdict_requires_every_claim_once_and_boolean_support():
+    claims = extract_cited_claims("One claim [E1]. Another claim [E2].")
+    valid = json.dumps({"verdicts": [
+        {"claim_id": "C1", "supported": True, "reason": "Directly stated."},
+        {"claim_id": "C2", "supported": True, "reason": "Directly stated."},
+    ]})
+    assert _parse_semantic_verdict(valid, claims) == (True, [])
+
+    missing = json.dumps({"verdicts": [
+        {"claim_id": "C1", "supported": True, "reason": "Directly stated."},
+    ]})
+    passed, errors = _parse_semantic_verdict(missing, claims)
+    assert not passed
+    assert "missing" in errors[0]
+
+    string_boolean = json.dumps({"verdicts": [
+        {"claim_id": "C1", "supported": "true", "reason": "Directly stated."},
+        {"claim_id": "C2", "supported": True, "reason": "Directly stated."},
+    ]})
+    assert not _parse_semantic_verdict(string_boolean, claims)[0]
+
+
+def test_unsupported_semantic_claim_is_hidden(monkeypatch):
+    def fake_call(backend, system, user):
+        if system == SEMANTIC_VERIFIER_SYSTEM:
+            return json.dumps({"verdicts": [
+                {"claim_id": "C1", "supported": False, "reason": "Not in the passage."},
+            ]})
+        return _answer("The paper used one million participants [E1].")
+
+    monkeypatch.setattr("src.generate._call_backend", fake_call)
+    result = generate_answer(
+        "How many participants?", chunks(), max_retries=0,
+        semantic_validation_enabled=True,
+    )
+
+    assert result.status is GenerationStatus.VALIDATION_FAILED
+    assert result.validation.references_valid
+    assert result.validation.semantic_support == "failed"
+    assert result.validation.outcome == "failed"
+    assert "one million" not in result.answer
+    assert any("C1" in error for error in result.error_messages)
+
+
+def test_semantic_failure_can_regenerate_into_supported_answer(monkeypatch):
+    generated = iter([
+        _answer("The paper used one million participants [E1]."),
+        _answer("A result improved [E1]."),
+    ])
+    verifier_supported = iter([False, True])
+    generation_prompts = []
+
+    def fake_call(backend, system, user):
+        if system == SEMANTIC_VERIFIER_SYSTEM:
+            supported = next(verifier_supported)
+            return json.dumps({"verdicts": [
+                {"claim_id": "C1", "supported": supported, "reason": "Checked."},
+            ]})
+        generation_prompts.append(user)
+        return next(generated)
+
+    monkeypatch.setattr("src.generate._call_backend", fake_call)
+    result = generate_answer(
+        "What improved?", chunks(), max_retries=1,
+        semantic_validation_enabled=True,
+    )
+
+    assert result.status is GenerationStatus.ANSWERED
+    assert result.answer == "A result improved [E1]."
+    assert result.validation.semantic_support == "passed"
+    assert result.regeneration_attempts == 1
+    assert "not supported by its cited evidence" in generation_prompts[1]
 
 
 def test_retry_uses_same_evidence_and_failure_hides_unverified_response(monkeypatch):

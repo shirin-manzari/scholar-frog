@@ -53,7 +53,11 @@ class CitationValidation:
     def outcome(self) -> str:
         if not self.applicable:
             return "not_applicable"
-        return "passed" if self.references_valid else "failed"
+        return (
+            "passed"
+            if self.references_valid and self.semantic_support != "failed"
+            else "failed"
+        )
 
 
 @dataclass
@@ -68,9 +72,38 @@ class GenerationResult:
     abstention_reason: AbstentionReason | None = None
 
 
+@dataclass(frozen=True)
+class CitedClaim:
+    claim_id: str
+    text: str
+    evidence_ids: tuple[str, ...]
+
+
 _CITATION = re.compile(r"(?<![\w])\[(E\d+)\](?!\s*\()")
 _E_LIKE = re.compile(r"\[(E\s*\d+[^\]]*)\]", re.IGNORECASE)
 _LEGACY_CITATION = re.compile(r"\[[^\]\n,]+,\s*(?:[^\]]+,\s*)?p\.\s*\d+[^\]]*\]", re.IGNORECASE)
+
+
+def extract_cited_claims(answer: str) -> list[CitedClaim]:
+    """Extract sentence-level claims and the evidence IDs attached to them."""
+    claims = []
+    for segment in re.split(r"(?<=[.!?])\s+|\n+", answer):
+        evidence_ids = tuple(dict.fromkeys(_CITATION.findall(segment)))
+        if not evidence_ids:
+            continue
+        text = _CITATION.sub("", segment)
+        text = re.sub(r"^\s*(?:#{1,6}|[-+*>]|\d+[.)])\s+", "", text)
+        text = re.sub(r"(?:\*\*|__|~~|`)", "", text)
+        text = re.sub(r"\s+([.,;:!?])", r"\1", text)
+        text = " ".join(text.split()).strip()
+        if not text or not re.search(r"[\w\d]", text, re.UNICODE):
+            continue
+        claims.append(CitedClaim(
+            claim_id=f"C{len(claims) + 1}",
+            text=text,
+            evidence_ids=evidence_ids,
+        ))
+    return claims
 
 
 def assign_evidence(chunks: list[dict]) -> list[Evidence]:

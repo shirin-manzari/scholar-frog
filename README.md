@@ -29,6 +29,12 @@ Answers show evidence references you can open in the source PDFs. If the excerpt
 do not support an answer, Scholar Frog says so. Check cited passages before using
 an answer in academic work. Scanned PDFs need OCR and are not supported.
 
+By default, every generated answer receives a second semantic verification pass:
+each cited claim is checked against the exact excerpts attached to it. Unsupported
+claims trigger one bounded regeneration attempt and are never shown if verification
+still fails. This uses the configured LLM backend and can be disabled with
+`CITATION_SEMANTIC_VALIDATION=false` or CLI option `--no-semantic-validation`.
+
 Optional index settings go in `scholar-frog.toml` (see
 `scholar-frog.toml.example`) or `SCHOLAR_FROG_` environment variables. The old
 `scholarq.toml` and `SCHOLARQ_` names still work. OpenAI and Anthropic are

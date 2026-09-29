@@ -88,6 +88,8 @@ def main():
                         help="Disable citation reference validation")
     parser.add_argument("--no-citation-coverage", action="store_true",
                         help="Disable conservative uncited sentence warnings")
+    parser.add_argument("--no-semantic-validation", action="store_true",
+                        help="Disable claim-to-evidence semantic verification")
     parser.add_argument("--debug-citations", action="store_true",
                         help="Show evidence mapping, validation details, and original response")
     args = parser.parse_args()
@@ -154,7 +156,8 @@ def main():
         with console.status("[bold cyan]Generating grounded answer...[/bold cyan]"):
             result = generate_answer(args.question, chunks, max_retries=args.citation_retries,
                                      coverage_enabled=not args.no_citation_coverage,
-                                     validation_enabled=not args.no_citation_validation)
+                                     validation_enabled=not args.no_citation_validation,
+                                     semantic_validation_enabled=not args.no_semantic_validation)
     except (RuntimeError, ImportError, ValueError) as exc:
         console.print(f"[red]Generation failed:[/red] {exc}")
         return 1
@@ -178,9 +181,10 @@ def main():
         if result.abstention_reason is not None:
             console.print(f"Abstention reason: {result.abstention_reason.value}")
         validation_outcome = result.validation.outcome
-        if result.validation.references_valid:
-            validation_outcome += "; semantic support not checked"
         console.print(f"Citation validation: {validation_outcome}")
+        console.print(
+            f"Semantic support: {result.validation.semantic_support.replace('_', ' ')}"
+        )
         console.print(f"Regeneration attempts: {result.regeneration_attempts}")
         for error in result.error_messages:
             console.print(f"  [red]{error}[/red]")

@@ -87,6 +87,7 @@ def ask_question(question):
             for item in cited
         ],
         "warnings": result.validation.coverage_warnings if cited else [],
+        "semantic_support": result.validation.semantic_support,
     }
 
 

@@ -63,7 +63,12 @@ def test_ask_excludes_removed_sources_but_keeps_existing_alias(tmp_path, monkeyp
 
     def fake_generate(question, chunks):
         observed.extend(chunks)
-        return SimpleNamespace(status=GenerationStatus.ABSTAINED, answer="No answer", validation=None)
+        validation = SimpleNamespace(
+            valid_evidence=[], coverage_warnings=[], semantic_support="not_checked"
+        )
+        return SimpleNamespace(
+            status=GenerationStatus.ABSTAINED, answer="No answer", validation=validation
+        )
 
     monkeypatch.setattr(app, "generate_answer", fake_generate)
     app.ask_question("Question?")
