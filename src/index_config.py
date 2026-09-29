@@ -11,7 +11,7 @@ from pathlib import Path
 
 INDEX_SCHEMA_VERSION = 1
 CHUNKING_VERSION = "markdown-heading-paragraph-v1"
-TEXT_EXTRACTION_VERSION = "pymupdf4llm-fallback-v1"
+TEXT_EXTRACTION_VERSION = "pymupdf4llm-clean-margins-v2"
 CONFIG_FILE = "scholar-frog.toml"
 LEGACY_CONFIG_FILE = "scholarq.toml"
 

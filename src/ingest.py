@@ -1,5 +1,7 @@
 import hashlib
+import math
 import re
+from collections import Counter
 from pathlib import Path
 
 from rich.console import Console
@@ -94,6 +96,135 @@ def get_embedding_model():
     return _embedding_model
 
 
+def _plain_title(text: str) -> str:
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"[*_`#]+", "", text)
+    return " ".join(text.split()).strip()
+
+
+def _strip_running_title(text: str, title: str) -> str:
+    words = re.findall(r"[^\W_]+", _plain_title(title), re.UNICODE)
+    if len(words) < 4:
+        return text
+    title_pattern = r"[\W_]+".join(re.escape(word) for word in words)
+    match = re.match(
+        rf"^\s*(?:[#*_`]+\s*)*{title_pattern}"
+        rf"(?:\s*[*_`#]+)*[ \t]*(?:\d+(?::\d+)?)?[ \t]*",
+        text,
+        re.IGNORECASE,
+    )
+    if match is None:
+        return text
+    return text[match.end():].lstrip(" \t")
+
+
+def _margin_signature(line: str) -> str | None:
+    plain = _plain_title(line).casefold()
+    if not plain:
+        return None
+    if re.fullmatch(r"(?:page\s*)?\d+(?:\s*(?:of|/)\s*\d+)?", plain):
+        return "<page-number>"
+    plain = re.sub(r"\d+", "#", plain)
+    plain = " ".join(plain.split())
+    if len(plain) > 200 or len(re.findall(r"[^\W\d_]", plain, re.UNICODE)) < 4:
+        return None
+    return plain
+
+
+_LEADING_PAGE_LOCATOR = re.compile(
+    r"(?<![\d:])(?:\*\*)?(?P<volume>\d{1,4}):(?P<page>\d{1,4})(?:\*\*)?[ \t]+"
+)
+_LEADING_VOLUME = re.compile(
+    r"^\s*(?:\*\*)?(?P<volume>\d{1,4})(?:\*\*)?[ \t]+"
+)
+
+
+def _leading_page_locator(text: str) -> re.Match[str] | None:
+    """Find journal locators such as ``10:2`` in an extracted top margin."""
+    return _LEADING_PAGE_LOCATOR.search(text[:200])
+
+
+def remove_repeated_margins(
+    pages: list[tuple[int, str]], title: str | None = None
+) -> list[tuple[int, str]]:
+    """Remove recurring header/footer lines without changing page numbers."""
+    if not pages:
+        return []
+
+    prepared = []
+    for page_index, (page_number, text) in enumerate(pages):
+        if page_index and title:
+            text = _strip_running_title(text, title)
+        prepared.append((page_number, text))
+
+    threshold = max(2, math.ceil(len(prepared) * 0.3))
+    locator_sequences: Counter[tuple[str, int]] = Counter()
+    for page_number, text in prepared:
+        match = _leading_page_locator(text)
+        if match is not None:
+            locator_sequences[(
+                match.group("volume"), int(match.group("page")) - page_number
+            )] += 1
+    repeated_locator_sequences = {
+        sequence for sequence, count in locator_sequences.items() if count >= threshold
+    }
+    if repeated_locator_sequences:
+        repeated_locator_volumes = {volume for volume, _ in repeated_locator_sequences}
+        without_locators = []
+        for page_number, text in prepared:
+            match = _leading_page_locator(text)
+            if match is not None and (
+                match.group("volume"), int(match.group("page")) - page_number
+            ) in repeated_locator_sequences:
+                # Everything before the locator is the alternating running
+                # header; the body begins immediately after it.
+                text = text[match.end():].lstrip(" \t")
+                if title and page_number != prepared[0][0]:
+                    text = _strip_running_title(text, title)
+            elif page_number == prepared[0][0]:
+                volume_match = _LEADING_VOLUME.match(text)
+                if (
+                    volume_match is not None
+                    and volume_match.group("volume") in repeated_locator_volumes
+                    and "**" in volume_match.group(0)
+                ):
+                    text = text[volume_match.end():].lstrip(" \t")
+            without_locators.append((page_number, text))
+        prepared = without_locators
+
+    top_counts: Counter[str] = Counter()
+    bottom_counts: Counter[str] = Counter()
+    page_lines = []
+    for page_number, text in prepared:
+        lines = text.splitlines()
+        nonempty = [i for i, line in enumerate(lines) if line.strip()]
+        top = nonempty[:2]
+        bottom = nonempty[-2:]
+        for signature in {
+            value for i in top if (value := _margin_signature(lines[i])) is not None
+        }:
+            top_counts[signature] += 1
+        for signature in {
+            value for i in bottom if (value := _margin_signature(lines[i])) is not None
+        }:
+            bottom_counts[signature] += 1
+        page_lines.append((page_number, lines, top, bottom))
+
+    repeated_top = {value for value, count in top_counts.items() if count >= threshold}
+    repeated_bottom = {value for value, count in bottom_counts.items() if count >= threshold}
+    cleaned = []
+    for page_number, lines, top, bottom in page_lines:
+        remove = {
+            i for i in top if _margin_signature(lines[i]) in repeated_top
+        } | {
+            i for i in bottom if _margin_signature(lines[i]) in repeated_bottom
+        }
+        text = "\n".join(line for i, line in enumerate(lines) if i not in remove).strip()
+        if text:
+            cleaned.append((page_number, text))
+    return cleaned
+
+
 def extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
     """Returns [(page_number, markdown), ...], 1-indexed pages.
 
@@ -115,6 +246,8 @@ def extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
                 if text.strip():
                     pages.append((page_number, text))
             if pages:
+                title = guess_title(pdf_path, pages[0][1])
+                pages = remove_repeated_margins(pages, title)
                 console.print(f"  [dim]Extraction: Markdown ({len(pages)} pages)[/dim]")
                 return pages
             raise ValueError("Markdown conversion returned no usable page text")
@@ -125,6 +258,8 @@ def extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
                 text = page.get_text("text")
                 if text.strip():
                     pages.append((i + 1, text))
+            title = guess_title(pdf_path, pages[0][1]) if pages else None
+            pages = remove_repeated_margins(pages, title)
             console.print(f"  [dim]Extraction: plain-text fallback ({len(pages)} pages)[/dim]")
             return pages
 
@@ -202,11 +337,11 @@ def guess_title(pdf_path: Path, first_page_text: str) -> str:
     for line in first_page_text.splitlines():
         match = re.match(r"^#\s+(.+?)\s*#*\s*$", line.strip())
         if match and match.group(1).strip():
-            return match.group(1).strip()
+            return _plain_title(match.group(1))
     for line in first_page_text.splitlines():
         line = line.strip()
         if len(line) > 15 and not line.isupper():
-            return line
+            return _plain_title(line)
     return pdf_path.stem
 
 
