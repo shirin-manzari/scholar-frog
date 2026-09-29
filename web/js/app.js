@@ -53,6 +53,161 @@ function plainDisplayText(text) {
     .trim();
 }
 
+function appendInlineMarkdown(container, text, references, turn) {
+  const tokenPattern = /(\[E\d+\]|\[[^\]\n]+\]\(https?:\/\/[^)\s]+\)|`[^`\n]+`|\*\*[^*\n]+\*\*|__[^_\n]+__|~~[^~\n]+~~|\*[^*\n]+\*|_[^_\n]+_)/g;
+  let offset = 0;
+  for (const match of text.matchAll(tokenPattern)) {
+    container.append(document.createTextNode(text.slice(offset, match.index)));
+    const token = match[0];
+    const evidenceId = token.slice(1, -1);
+    if (/^\[E\d+\]$/.test(token) && references.has(evidenceId)) {
+      const link = document.createElement("a");
+      link.className = "citation";
+      link.href = `#reference-${turn}-${evidenceId}`;
+      link.textContent = token;
+      container.append(link);
+    } else if (/^\[E\d+\]$/.test(token)) {
+      container.append(document.createTextNode(token));
+    } else {
+      let element;
+      let content;
+      const markdownLink = token.match(/^\[([^\]]+)\]\((https?:\/\/[^)\s]+)\)$/);
+      if (markdownLink) {
+        element = document.createElement("a");
+        element.href = markdownLink[2];
+        element.target = "_blank";
+        element.rel = "noopener noreferrer";
+        element.textContent = markdownLink[1];
+      } else if (token.startsWith("`")) {
+        element = document.createElement("code");
+        content = token.slice(1, -1);
+        element.textContent = content;
+      } else if (token.startsWith("**") || token.startsWith("__")) {
+        element = document.createElement("strong");
+        content = token.slice(2, -2);
+        appendInlineMarkdown(element, content, references, turn);
+      } else if (token.startsWith("~~")) {
+        element = document.createElement("s");
+        content = token.slice(2, -2);
+        appendInlineMarkdown(element, content, references, turn);
+      } else {
+        element = document.createElement("em");
+        content = token.slice(1, -1);
+        appendInlineMarkdown(element, content, references, turn);
+      }
+      container.append(element);
+    }
+    offset = match.index + token.length;
+  }
+  container.append(document.createTextNode(text.slice(offset)));
+}
+
+function renderMarkdownAnswer(container, markdown, references, turn) {
+  container.replaceChildren();
+  const lines = markdown
+    .replace(/&#(?:x20|32);/gi, " ")
+    .replace(/\r\n?/g, "\n")
+    .trim()
+    .split("\n");
+  let paragraphLines = [];
+  let activeList = null;
+  let codeBlockLines = null;
+
+  const flushParagraph = () => {
+    if (!paragraphLines.length) return;
+    const paragraph = document.createElement("p");
+    appendInlineMarkdown(
+      paragraph,
+      paragraphLines.map((line) => line.trim()).join(" "),
+      references,
+      turn,
+    );
+    container.append(paragraph);
+    paragraphLines = [];
+  };
+
+  for (const line of lines) {
+    if (/^\s*```/.test(line)) {
+      if (codeBlockLines === null) {
+        flushParagraph();
+        activeList = null;
+        codeBlockLines = [];
+      } else {
+        const pre = document.createElement("pre");
+        const code = document.createElement("code");
+        code.textContent = codeBlockLines.join("\n");
+        pre.append(code);
+        container.append(pre);
+        codeBlockLines = null;
+      }
+      continue;
+    }
+    if (codeBlockLines !== null) {
+      codeBlockLines.push(line);
+      continue;
+    }
+
+    if (!line.trim()) {
+      flushParagraph();
+      activeList = null;
+      continue;
+    }
+
+    const heading = line.match(/^\s*#{1,6}\s+(.+)$/);
+    if (heading) {
+      flushParagraph();
+      activeList = null;
+      const element = document.createElement("h4");
+      appendInlineMarkdown(element, heading[1], references, turn);
+      container.append(element);
+      continue;
+    }
+
+    const unorderedItem = line.match(/^\s*[-+*]\s+(.+)$/);
+    const orderedItem = line.match(/^\s*\d+[.)]\s+(.+)$/);
+    if (unorderedItem || orderedItem) {
+      flushParagraph();
+      const listType = orderedItem ? "ol" : "ul";
+      if (!activeList || activeList.tagName.toLowerCase() !== listType) {
+        activeList = document.createElement(listType);
+        container.append(activeList);
+      }
+      const item = document.createElement("li");
+      appendInlineMarkdown(item, (orderedItem || unorderedItem)[1], references, turn);
+      activeList.append(item);
+      continue;
+    }
+
+    const quote = line.match(/^\s*>\s?(.*)$/);
+    if (quote) {
+      flushParagraph();
+      activeList = null;
+      const element = document.createElement("blockquote");
+      appendInlineMarkdown(element, quote[1], references, turn);
+      container.append(element);
+      continue;
+    }
+
+    if (/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/.test(line)) {
+      flushParagraph();
+      activeList = null;
+      container.append(document.createElement("hr"));
+      continue;
+    }
+
+    activeList = null;
+    paragraphLines.push(line);
+  }
+  if (codeBlockLines !== null) {
+    const pre = document.createElement("pre");
+    const code = document.createElement("code");
+    code.textContent = codeBlockLines.join("\n");
+    pre.append(code);
+    container.append(pre);
+  }
+  flushParagraph();
+}
+
 async function refreshStatus() {
   try {
     const { papers } = await request("/api/status");
@@ -210,19 +365,7 @@ function renderAnswer(data, bubble, turn) {
   answer.className = "answer";
   bubble.append(heading, answer);
   const references = new Map(data.references.map((item) => [item.id, item]));
-  const parts = plainDisplayText(data.answer).split(/(\[E\d+\])/g);
-  for (const part of parts) {
-    const id = part.slice(1, -1);
-    if (/^\[E\d+\]$/.test(part) && references.has(id)) {
-      const link = document.createElement("a");
-      link.className = "citation";
-      link.href = `#reference-${turn}-${id}`;
-      link.textContent = part;
-      answer.append(link);
-    } else {
-      answer.append(document.createTextNode(part));
-    }
-  }
+  renderMarkdownAnswer(answer, data.answer, references, turn);
 
   if (data.references.length) {
     const title = document.createElement("h3");
