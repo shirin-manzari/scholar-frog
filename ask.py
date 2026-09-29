@@ -69,6 +69,7 @@ def main():
 
     parser.add_argument("question", nargs="?", help="The question to ask.")
     parser.add_argument("--papers", default="papers", help="Folder of PDFs (default: ./papers)")
+    parser.add_argument("--paper", help="Search only this paper (path relative to --papers)")
     parser.add_argument("--top-k", type=int, default=config.final_results,
                         help="Number of chunks to retrieve")
     parser.add_argument("--retrieval", choices=RETRIEVAL_MODES, default=config.mode,
@@ -121,35 +122,41 @@ def main():
     console.print(f"\n[bold]Q:[/bold] {args.question}\n")
 
     if args.compare:
-        for mode in RETRIEVAL_MODES:
-            start = time.perf_counter()
-            results = retrieve(args.question, top_k=args.top_k, retrieval_mode=mode)
-            elapsed = time.perf_counter() - start
-            console.print(f"[bold cyan]{mode}[/bold cyan] — {elapsed:.2f}s")
-            if not results:
-                console.print("  No results.")
-            for result in results:
-                scores = "  ".join(
-                    f"{name}={result[name]:.4f}"
-                    for name in (
-                        "dense_score", "bm25_score", "rrf_score", "reranker_score"
+        try:
+            for mode in RETRIEVAL_MODES:
+                start = time.perf_counter()
+                results = retrieve(args.question, top_k=args.top_k,
+                                   retrieval_mode=mode, paper=args.paper)
+                elapsed = time.perf_counter() - start
+                console.print(f"[bold cyan]{mode}[/bold cyan] — {elapsed:.2f}s")
+                if not results:
+                    console.print("  No results.")
+                for result in results:
+                    scores = "  ".join(
+                        f"{name}={result[name]:.4f}"
+                        for name in (
+                            "dense_score", "bm25_score", "rrf_score", "reranker_score"
+                        )
+                        if result[name] is not None
                     )
-                    if result[name] is not None
-                )
-                console.print(
-                    f"  {result['id']} | {result['title']} — {result['section']} "
-                    f"— p.{result['page']} ({result['source']}) | {scores}"
-                )
-                console.print(f"    {result['text'][:400].strip()}\n")
+                    console.print(
+                        f"  {result['id']} | {result['title']} — {result['section']} "
+                        f"— p.{result['page']} ({result['source']}) | {scores}"
+                    )
+                    console.print(f"    {result['text'][:400].strip()}\n")
+        except (IndexCompatibilityError, ValueError) as exc:
+            console.print(f"[red]Retrieval failed:[/red] {exc}")
+            return 1
         return
 
     try:
         with console.status("[bold cyan]Retrieving relevant excerpts...[/bold cyan]"):
             chunks = retrieve(
-                args.question, top_k=args.top_k, retrieval_mode=args.retrieval
+                args.question, top_k=args.top_k, retrieval_mode=args.retrieval,
+                paper=args.paper,
             )
-    except IndexCompatibilityError as exc:
-        console.print(f"[red]Index cannot be used safely:[/red] {exc}")
+    except (IndexCompatibilityError, ValueError) as exc:
+        console.print(f"[red]Retrieval failed:[/red] {exc}")
         return 1
 
     try:
