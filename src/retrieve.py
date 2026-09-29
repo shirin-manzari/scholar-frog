@@ -94,12 +94,39 @@ def _bounded_float(name: str, default: float, minimum: float, maximum: float) ->
     return parsed
 
 
+def _normalize_english_term(token: str) -> str:
+    """Conservatively normalize common English inflections for lexical search."""
+    if not token.isalpha() or len(token) < 4:
+        return token
+
+    if token.endswith("ies") and len(token) > 4:
+        token = f"{token[:-3]}y"
+    elif token.endswith("sses"):
+        token = token[:-2]
+    elif token.endswith("s") and not token.endswith(("ss", "us", "is")):
+        token = token[:-1]
+
+    # These forms drop the final "e" from verbs ending in "ute", so they
+    # normalize contribute, contributes, contributing, and contributions alike.
+    if token.endswith("ution"):
+        return f"{token[:-5]}ute"
+    if token.endswith("uting"):
+        return f"{token[:-5]}ute"
+    if token.endswith("uted"):
+        return f"{token[:-4]}ute"
+    return token
+
+
 def _tokenize(text: str) -> list[str]:
     tokens = re.findall(r"(?u)[^\W_][\w.+#/-]*", text.casefold())
     expanded = []
     for token in tokens:
-        expanded.append(token)
-        expanded.extend(part for part in re.split(r"[.+#/-]+", token) if part != token)
+        expanded.append(_normalize_english_term(token))
+        expanded.extend(
+            _normalize_english_term(part)
+            for part in re.split(r"[.+#/-]+", token)
+            if part != token
+        )
     return expanded
 
 

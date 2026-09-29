@@ -116,6 +116,32 @@ def test_bm25_matches_components_of_hyphenated_terms(collection):
     assert hits[0]["id"] == "chunk-a"
 
 
+@pytest.mark.parametrize(
+    "term",
+    ["contribute", "contributes", "contributed", "contributing", "contribution", "contributions"],
+)
+def test_tokenizer_normalizes_contribute_word_family(term):
+    assert retrieval._tokenize(term) == ["contribute"]
+
+
+def test_bm25_matches_morphological_variants():
+    rows = [
+        {"id": "contributions", "text": "The survey's contributions are a taxonomy and benchmarks.", "metadata": {
+            "source": "survey.pdf", "title": "Survey", "page": 1,
+        }},
+        {"id": "other", "text": "This passage discusses unrelated limitations.", "metadata": {
+            "source": "other.pdf", "title": "Other", "page": 1,
+        }},
+    ]
+    collection = FakeCollection(rows)
+
+    hits = retrieval._bm25_search(
+        "What does the survey contribute?", collection, 2, committed_snapshot(collection)
+    )
+
+    assert [hit["id"] for hit in hits] == ["contributions"]
+
+
 def test_bm25_breaks_equal_score_ties_by_chunk_id():
     rows = [
         {"id": "z", "text": "shared-term appears here", "metadata": {
