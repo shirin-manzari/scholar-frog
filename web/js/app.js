@@ -74,10 +74,10 @@ async function refreshStatus() {
         list.append(item);
       }
     }
-    showEmptyConversation(papers.length > 0);
+    showWelcomeConversation();
   } catch (error) {
     showPaperListMessage(error.message);
-    showEmptyConversation(true);
+    showWelcomeConversation();
   }
 }
 
@@ -181,13 +181,9 @@ function randomNoPapersMessage() {
   ];
 }
 
-function showEmptyConversation(hasPapers) {
+function showWelcomeConversation() {
   if (turnNumber > 0) return;
   $("conversation").replaceChildren();
-  if (!hasPapers) {
-    appendMessage("assistant", randomNoPapersMessage(), "idle");
-    return;
-  }
   const welcomeMessage = appendMessage("assistant", "", "talking");
   const welcomeName = document.createElement("span");
   welcomeName.className = "welcome-name";
