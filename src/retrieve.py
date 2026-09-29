@@ -3,7 +3,9 @@ import json
 import math
 import os
 import re
+from collections import Counter
 from dataclasses import dataclass
+from difflib import SequenceMatcher, get_close_matches
 
 from dotenv import load_dotenv
 
@@ -47,7 +49,7 @@ class RetrievalConfig:
             rerank_candidates=_positive_int("RERANK_CANDIDATES", 20),
             final_results=_positive_int("FINAL_RESULTS", 5),
             reranker_model=reranker_model,
-            reranker_min_score=_finite_float("RERANKER_MIN_SCORE", 0.05),
+            reranker_min_score=_finite_float("RERANKER_MIN_SCORE", 0.01),
             max_chunks_per_paper=_positive_int("MAX_CHUNKS_PER_PAPER", 2),
             mmr_lambda=_bounded_float("MMR_LAMBDA", 0.75, 0.0, 1.0),
             adjacent_chunks=_non_negative_int("ADJACENT_CHUNKS", 1),
@@ -128,6 +130,36 @@ def _tokenize(text: str) -> list[str]:
             if part != token
         )
     return expanded
+
+
+def _correct_search_question(question: str, tokenized: list[list[str]]) -> str:
+    """Correct confident corpus-backed typos for search, not for the answer."""
+    counts = Counter(token for document in tokenized for token in document if token.isalpha())
+    frequent = sorted(token for token, count in counts.items() if count >= 5 and len(token) >= 6)
+    if not frequent:
+        return question
+
+    def correct(match: re.Match[str]) -> str:
+        word = match.group(0)
+        # Keep names and acronyms intact; sentence-initial capitalization is
+        # allowed because it is common in ordinary questions.
+        if (word[0].isupper() and match.start() > 0) or word.isupper():
+            return word
+        normalized = _normalize_english_term(word.casefold())
+        if counts[normalized] >= 2:
+            return word
+        matches = get_close_matches(normalized, frequent, n=2, cutoff=0.78)
+        if not matches:
+            return word
+        best = matches[0]
+        if len(matches) > 1:
+            best_similarity = SequenceMatcher(None, normalized, best).ratio()
+            next_similarity = SequenceMatcher(None, normalized, matches[1]).ratio()
+            if best_similarity - next_similarity < 0.035:
+                return word
+        return best.capitalize() if word[0].isupper() else best
+
+    return re.sub(r"(?u)\b[^\W\d_]{6,}\b", correct, question)
 
 
 def _corpus_fingerprint(ids: list[str], docs: list[str], metadatas: list[dict]) -> str:
@@ -213,7 +245,7 @@ def _make_committed_result(chunk_id: str, text: str, metadata: dict, owner: dict
 
 
 def _dense_search(question: str, collection, count: int, candidate_count: int,
-                  snapshot) -> list[dict]:
+                  snapshot, document_id: str | None = None) -> list[dict]:
     if not snapshot.chunk_ids or candidate_count <= 0:
         return []
     config = get_index_config()
@@ -226,15 +258,23 @@ def _dense_search(question: str, collection, count: int, candidate_count: int,
             f"Query embedding dimension {len(query_embedding[0])} does not match "
             f"index dimension {config.embedding_dimension}; rebuild or correct configuration."
         )
-    target = min(candidate_count, len(snapshot.chunk_ids))
+    allowed_ids = (
+        {chunk_id for chunk_id, owner in snapshot.owners.items()
+         if owner["document_id"] == document_id}
+        if document_id is not None else snapshot.chunk_ids
+    )
+    target = min(candidate_count, len(allowed_ids))
     fetch = min(max(target, 1), count)
     hits = []
     while fetch:
-        results = collection.query(
+        query_args = dict(
             query_embeddings=query_embedding,
             n_results=fetch,
             include=["documents", "metadatas", "distances"],
         )
+        if document_id is not None:
+            query_args["where"] = {"document_id": document_id}
+        results = collection.query(**query_args)
         hits = []
         for chunk_id, text, metadata, distance in zip(
             results["ids"][0], results["documents"][0],
@@ -242,7 +282,8 @@ def _dense_search(question: str, collection, count: int, candidate_count: int,
         ):
             owner = snapshot.owners.get(chunk_id)
             metadata = metadata or {}
-            if owner is None or (metadata.get("document_id") and metadata["document_id"] != owner["document_id"]):
+            if (chunk_id not in allowed_ids or owner is None
+                    or (metadata.get("document_id") and metadata["document_id"] != owner["document_id"])):
                 continue
             hit = _make_committed_result(chunk_id, text, metadata, owner)
             hit["distance"] = hit["dense_distance"] = float(distance)
@@ -254,7 +295,8 @@ def _dense_search(question: str, collection, count: int, candidate_count: int,
     return sorted(hits, key=lambda hit: (hit["distance"], hit["id"]))
 
 
-def _bm25_search(question: str, collection, candidate_count: int, snapshot) -> list[dict]:
+def _bm25_search(question: str, collection, candidate_count: int, snapshot,
+                 document_id: str | None = None) -> list[dict]:
     query_tokens = _tokenize(question)
     if not query_tokens:
         return []
@@ -268,6 +310,7 @@ def _bm25_search(question: str, collection, candidate_count: int, snapshot) -> l
     matching = [
         i for i, tokens in enumerate(tokenized)
         if query_terms.intersection(tokens)
+        and (document_id is None or _paper_key(records[i]) == document_id)
     ]
     ranked = sorted(matching, key=lambda i: (-float(scores[i]), records[i]["id"]))
     hits = []
@@ -351,6 +394,88 @@ def _paper_key(result: dict) -> str:
         or result.get("source")
         or result.get("id")
     )
+
+
+_OVERVIEW_QUESTION = re.compile(
+    r"\b(?:summari[sz]e|summary|overview|contribut\w*|dimensions?|key findings|main findings|"
+    r"key takeaways|main points|what (?:is|are) (?:this|the) (?:paper|survey|article) about)\b",
+    re.IGNORECASE,
+)
+_OVERVIEW_CLAIM = re.compile(
+    r"\b(?:we (?:propose|present|introduce|provide|review|survey|identify|discuss|examine|"
+    r"evaluate|conclude)|this (?:paper|article|survey|work) (?:proposes|presents|introduces|"
+    r"provides|reviews|surveys|discusses|examines|evaluates)|our contributions?)\b",
+    re.IGNORECASE,
+)
+_OVERVIEW_TITLE_STOPWORDS = {"a", "an", "and", "in", "of", "the", "to", "this", "paper"}
+_DIMENSION_LIST_QUESTION = re.compile(
+    r"\b(?:what|which|list|name|identify)\b.*\bdimensions?\b", re.IGNORECASE
+)
+_DIRECT_DIMENSION_LIST = re.compile(
+    r"\bdimensions?\b[^:.]{0,120}:\s*[^.]{15,}", re.IGNORECASE
+)
+
+
+def _overview_evidence(question: str, corpus: list[dict],
+                       document_id: str | None = None) -> list[dict]:
+    """Find short paper-level evidence whose relevance is structural, not lexical."""
+    if not _OVERVIEW_QUESTION.search(question):
+        return []
+
+    by_paper: dict[str, list[dict]] = {}
+    for result in corpus:
+        key = _paper_key(result)
+        if document_id is None or key == document_id:
+            by_paper.setdefault(key, []).append(result)
+
+    if document_id is None and len(by_paper) > 1:
+        query_terms = set(_tokenize(question)) - _OVERVIEW_TITLE_STOPWORDS
+        title_scores = {
+            key: len(query_terms & (set(_tokenize(records[0]["title"])) - _OVERVIEW_TITLE_STOPWORDS))
+            for key, records in by_paper.items()
+        }
+        best = max(title_scores.values())
+        if best:
+            by_paper = {key: records for key, records in by_paper.items()
+                        if title_scores[key] == best}
+
+    selected = []
+    for records in by_paper.values():
+        records = sorted(records, key=lambda item: (
+            int(item["page"]), _chunk_position(item) or (int(item["page"]), 0), item["id"]
+        ))
+        if _DIMENSION_LIST_QUESTION.search(question):
+            direct = next(
+                (item for item in records
+                 if _DIRECT_DIMENSION_LIST.search(item["text"])), None
+            )
+            if direct is not None:
+                selected.append({**direct, "selection_reason": "direct_list", "adjacent_to": None})
+                continue
+        first_page = min(int(item["page"]) for item in records)
+        opening = [item for item in records
+                   if int(item["page"]) == first_page
+                   and len(item["text"]) >= 120
+                   and _OVERVIEW_CLAIM.search(item["text"])]
+        opening.sort(key=lambda item: (
+            -len(_OVERVIEW_CLAIM.findall(item["text"])),
+            item["text"].count("@"),
+            _chunk_position(item) or (int(item["page"]), 0),
+        ))
+        structural = opening[:1]
+        for heading in ("abstract", "contribution", "conclusion", "introduction"):
+            matches = [item for item in records
+                       if heading in re.sub(r"[*_`#]", "", item.get("section", "")).casefold()
+                       and len(item["text"]) >= 120]
+            if matches:
+                structural.append(matches[0])
+        structural.extend(opening[1:2])
+        seen = set()
+        for item in structural:
+            if item["id"] not in seen:
+                selected.append({**item, "selection_reason": "overview", "adjacent_to": None})
+                seen.add(item["id"])
+    return selected
 
 
 def _text_similarity(left: str, right: str) -> float:
@@ -472,9 +597,9 @@ def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
 
     group_size = 1 + (2 * adjacent_chunks)
     initial_anchor_count = min(len(anchors), max(1, math.ceil(top_k / group_size)))
-    for anchor in anchors[:initial_anchor_count]:
-        if not add(anchor, "anchor"):
-            continue
+    active_anchors = [anchor for anchor in anchors[:initial_anchor_count]
+                      if add(anchor, "anchor")]
+    for anchor in active_anchors:
         ordered = by_paper.get(_paper_key(anchor), [])
         anchor_index = next(
             (i for i, (_, record) in enumerate(ordered) if record["id"] == anchor["id"]),
@@ -498,8 +623,12 @@ def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
     return selected
 
 
+_THIS_PAPER = re.compile(r"\bthis\s+(?:paper|article|study|survey)\b", re.IGNORECASE)
+
+
 def _retrieve_locked(question: str, top_k: int | None = None,
-                     retrieval_mode: str | None = None) -> list[dict]:
+                     retrieval_mode: str | None = None,
+                     paper: str | None = None) -> list[dict]:
     """Return ranked Chroma chunks with citation metadata and method scores."""
     config = RetrievalConfig.from_env()
     top_k = config.final_results if top_k is None else top_k
@@ -508,6 +637,8 @@ def _retrieve_locked(question: str, top_k: int | None = None,
     mode = retrieval_mode or config.mode
     if mode not in RETRIEVAL_MODES:
         raise ValueError(f"retrieval_mode must be one of: {', '.join(RETRIEVAL_MODES)}")
+    if paper is None and _THIS_PAPER.search(question):
+        raise ValueError("Select a paper before asking about 'this paper'.")
 
     collection = get_collection()
     count = collection.count()
@@ -518,33 +649,85 @@ def _retrieve_locked(question: str, top_k: int | None = None,
     if not snapshot.chunk_ids:
         return []
 
-    dense = _dense_search(question, collection, count, config.dense_candidates, snapshot)
+    document_id = None
+    if paper is not None:
+        document_ids = {
+            owner["document_id"] for owner in snapshot.owners.values()
+            if paper in owner.get("paths", [])
+        }
+        if len(document_ids) != 1:
+            raise ValueError(f"Selected paper {paper!r} is not in the index. Sync the library and try again.")
+        document_id = document_ids.pop()
+
+    _, correction_corpus, tokenized = _get_bm25_index(collection, snapshot)
+    if document_id is not None:
+        tokenized = [tokens for result, tokens in zip(correction_corpus, tokenized)
+                     if _paper_key(result) == document_id]
+    search_question = _correct_search_question(question, tokenized)
+
+    dense = _dense_search(search_question, collection, count, config.dense_candidates,
+                          snapshot, document_id)
     if mode == "dense":
-        return dense[:top_k]
+        results = dense[:top_k]
+    else:
+        bm25 = _bm25_search(search_question, collection, config.bm25_candidates,
+                            snapshot, document_id)
+        fused = reciprocal_rank_fusion(dense, bm25, k=config.rrf_k)
+        if mode == "hybrid":
+            results = fused[:top_k]
+        else:
+            candidates = fused[:config.rerank_candidates]
+            reranked = _rerank(search_question, candidates, config.reranker_model)
+            _, corpus, _ = _get_bm25_index(collection, snapshot)
+            if document_id is not None:
+                corpus = [result for result in corpus if _paper_key(result) == document_id]
+            max_per_paper = top_k if document_id is not None else config.max_chunks_per_paper
+            results = _select_context(
+                reranked,
+                corpus,
+                top_k=top_k,
+                min_score=config.reranker_min_score,
+                max_per_paper=max_per_paper,
+                diversity=config.mmr_lambda,
+                adjacent_chunks=config.adjacent_chunks,
+            )
+            overview = _overview_evidence(search_question, corpus, document_id)
+            if overview:
+                if _DIMENSION_LIST_QUESTION.search(search_question) and all(
+                    item["selection_reason"] == "direct_list" for item in overview
+                ):
+                    results = overview[:top_k]
+                else:
+                    target_papers = {_paper_key(item) for item in overview}
+                    selected_ids = set()
+                    paper_counts: dict[str, int] = {}
+                    focused = []
+                    for item in overview + results:
+                        key = _paper_key(item)
+                        if (item["id"] in selected_ids or key not in target_papers
+                                or paper_counts.get(key, 0) >= max_per_paper
+                                or len(focused) >= top_k):
+                            continue
+                        focused.append(item)
+                        selected_ids.add(item["id"])
+                        paper_counts[key] = paper_counts.get(key, 0) + 1
+                    results = focused
 
-    bm25 = _bm25_search(question, collection, config.bm25_candidates, snapshot)
-    fused = reciprocal_rank_fusion(dense, bm25, k=config.rrf_k)
-    if mode == "hybrid":
-        return fused[:top_k]
-
-    candidates = fused[:config.rerank_candidates]
-    reranked = _rerank(question, candidates, config.reranker_model)
-    _, corpus, _ = _get_bm25_index(collection, snapshot)
-    return _select_context(
-        reranked,
-        corpus,
-        top_k=top_k,
-        min_score=config.reranker_min_score,
-        max_per_paper=config.max_chunks_per_paper,
-        diversity=config.mmr_lambda,
-        adjacent_chunks=config.adjacent_chunks,
-    )
+    if paper is not None:
+        return [
+            {**result, "source": paper,
+             "metadata": {**result["metadata"], "source": paper}}
+            for result in results
+        ]
+    return results
 
 
 def retrieve(question: str, top_k: int | None = None,
-             retrieval_mode: str | None = None) -> list[dict]:
+             retrieval_mode: str | None = None,
+             paper: str | None = None) -> list[dict]:
     """Search a consistent committed manifest snapshot in every retrieval mode."""
     from src.sync import INDEX_LOCK
 
     with INDEX_LOCK:
-        return _retrieve_locked(question, top_k=top_k, retrieval_mode=retrieval_mode)
+        return _retrieve_locked(question, top_k=top_k,
+                                retrieval_mode=retrieval_mode, paper=paper)

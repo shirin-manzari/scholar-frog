@@ -24,8 +24,11 @@ class FakeCollection:
             "metadatas": [row["metadata"] for row in rows],
         }
 
-    def query(self, query_embeddings, n_results, include):
-        rows = [self.rows[chunk_id] for chunk_id in self.dense_order[:n_results]]
+    def query(self, query_embeddings, n_results, include, where=None):
+        rows = [self.rows[chunk_id] for chunk_id in self.dense_order]
+        if where is not None:
+            rows = [row for row in rows if row["metadata"].get("document_id", row["metadata"].get("file_hash")) == where["document_id"]]
+        rows = rows[:n_results]
         return {
             "ids": [[row["id"] for row in rows]],
             "documents": [[row["text"] for row in rows]],
@@ -142,6 +145,17 @@ def test_bm25_matches_morphological_variants():
     assert [hit["id"] for hit in hits] == ["contributions"]
 
 
+def test_search_corrects_confident_typos_from_paper_vocabulary():
+    tokens = [["dimension"] * 6 + ["trustworthiness"] * 6]
+
+    assert retrieval._correct_search_question(
+        "What are diminention of trustworthiness?", tokens
+    ) == "What are dimension of trustworthiness?"
+    assert retrieval._correct_search_question(
+        "What is quantum entanglement?", tokens
+    ) == "What is quantum entanglement?"
+
+
 def test_bm25_breaks_equal_score_ties_by_chunk_id():
     rows = [
         {"id": "z", "text": "shared-term appears here", "metadata": {
@@ -236,6 +250,54 @@ def test_dense_hybrid_and_hybrid_rerank_modes_preserve_metadata(
     assert reranked[0]["page"] == 7
     assert created == ["BAAI/bge-reranker-base"]
     assert rerank_batch_sizes == [2]
+
+
+def test_selected_paper_scopes_every_retrieval_mode_and_uses_selected_alias(
+    collection, monkeypatch
+):
+    monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
+    monkeypatch.setattr(retrieval, "get_embedding_model", lambda: FakeEmbeddingModel())
+    monkeypatch.setattr(
+        retrieval, "get_index_config",
+        lambda: __import__("src.index_config", fromlist=["IndexConfig"]).IndexConfig(
+            embedding_dimension=2
+        ),
+    )
+
+    def snapshot_with_alias(collection):
+        snapshot = committed_snapshot(collection)
+        snapshot.owners["chunk-c"]["paths"].append("copy-of-c.pdf")
+        return snapshot
+
+    monkeypatch.setattr(retrieval, "_get_committed_snapshot", snapshot_with_alias)
+
+    class FakeCrossEncoder:
+        def predict(self, pairs, batch_size, show_progress_bar):
+            return [0.8 for _ in pairs]
+
+    monkeypatch.setattr(retrieval, "_create_reranker", lambda model_name: FakeCrossEncoder())
+
+    for mode in retrieval.RETRIEVAL_MODES:
+        hits = retrieval.retrieve(
+            "What does this paper say about hallucinations?", top_k=3,
+            retrieval_mode=mode, paper="copy-of-c.pdf",
+        )
+        assert hits
+        assert {hit["id"] for hit in hits} == {"chunk-c"}
+        assert {hit["source"] for hit in hits} == {"copy-of-c.pdf"}
+        assert {hit["metadata"]["source"] for hit in hits} == {"copy-of-c.pdf"}
+
+
+def test_this_paper_requires_selection_and_unknown_paper_is_rejected(
+    collection, monkeypatch
+):
+    monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
+    monkeypatch.setattr(retrieval, "_get_committed_snapshot", committed_snapshot)
+
+    with pytest.raises(ValueError, match="Select a paper"):
+        retrieval.retrieve("Summarize this paper.", retrieval_mode="dense")
+    with pytest.raises(ValueError, match="not in the index"):
+        retrieval.retrieve("Summarize the findings.", paper="missing.pdf")
 
 
 def test_reranker_is_cached_and_limited_to_cpu_model_input(monkeypatch):
@@ -424,6 +486,64 @@ def test_adjacent_expansion_adds_neighbor_within_budget_and_paper_cap():
     assert selected[1]["adjacent_to"] == anchor["id"]
 
 
+def test_distinct_anchors_take_priority_over_adjacent_chunks():
+    digest = "a" * 64
+    corpus = [
+        _selection_result(
+            f"{digest}-1-{index}", text, None, digest, "paper.pdf",
+            chunk_index=index,
+        )
+        for index, text in enumerate(("first answer", "neighbor", "second answer"))
+    ]
+    anchors = [
+        {**corpus[0], "reranker_score": 0.9},
+        {**corpus[2], "reranker_score": 0.8},
+    ]
+
+    selected = retrieval._select_context(
+        anchors, corpus, top_k=5, min_score=0.01,
+        max_per_paper=2, diversity=1.0, adjacent_chunks=1,
+    )
+
+    assert [item["text"] for item in selected] == ["first answer", "second answer"]
+    assert all(item["selection_reason"] == "anchor" for item in selected)
+
+
+def test_reranker_receives_corrected_search_question(monkeypatch):
+    rows = [{
+        "id": "dimensions",
+        "text": "We propose six dimensions of trustworthiness. " + "dimension " * 8,
+        "metadata": {"source": "survey.pdf", "title": "Survey", "section": "Abstract",
+                     "page": 1, "file_hash": "survey"},
+        "distance": 0.1,
+    }]
+    collection = FakeCollection(rows)
+    monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
+    monkeypatch.setattr(retrieval, "_get_committed_snapshot", committed_snapshot)
+    monkeypatch.setattr(retrieval, "get_embedding_model", lambda: FakeEmbeddingModel())
+    monkeypatch.setattr(
+        retrieval, "get_index_config",
+        lambda: __import__("src.index_config", fromlist=["IndexConfig"]).IndexConfig(
+            embedding_dimension=2
+        ),
+    )
+    seen_questions = []
+
+    class FakeCrossEncoder:
+        def predict(self, pairs, batch_size, show_progress_bar):
+            seen_questions.extend(question for question, _ in pairs)
+            return [0.8 for _ in pairs]
+
+    monkeypatch.setattr(retrieval, "_create_reranker", lambda model_name: FakeCrossEncoder())
+
+    hits = retrieval.retrieve(
+        "What are diminention of trustworthiness?", paper="survey.pdf"
+    )
+
+    assert [item["id"] for item in hits] == ["dimensions"]
+    assert seen_questions == ["What are dimension of trustworthiness?"]
+
+
 def test_default_rerank_pipeline_returns_no_evidence_below_threshold(
     collection, monkeypatch
 ):
@@ -439,13 +559,100 @@ def test_default_rerank_pipeline_returns_no_evidence_below_threshold(
 
     class WeakCrossEncoder:
         def predict(self, pairs, batch_size, show_progress_bar):
-            return [0.01 for _ in pairs]
+            return [0.001 for _ in pairs]
 
     monkeypatch.setattr(retrieval, "_create_reranker", lambda model_name: WeakCrossEncoder())
 
     assert retrieval.retrieve(
         "unrelated question", top_k=5, retrieval_mode="hybrid-rerank"
     ) == []
+
+
+def test_overview_evidence_uses_target_paper_and_its_summary_sections():
+    def record(chunk_id, title, section, page, text):
+        result = _selection_result(chunk_id, text, None, title, f"{title}.pdf", page)
+        result["title"] = title
+        result["section"] = section
+        result["metadata"]["title"] = title
+        result["metadata"]["section"] = section
+        return result
+
+    corpus = [
+        record("survey-cover", "RAG Survey", "Untitled section", 1,
+               "Authors and affiliations. " * 15),
+        record("survey-abstract", "RAG Survey", "Untitled section", 1,
+               "We propose a framework and review six dimensions of trustworthiness. " * 4),
+        record("survey-intro", "RAG Survey", "1 Introduction", 2,
+               "The introduction explains the research problem and prior work. " * 4),
+        record("survey-conclusion", "RAG Survey", "6 Conclusion", 33,
+               "The conclusion summarizes the study and its findings. " * 4),
+        record("other-abstract", "Bias Study", "Abstract", 1,
+               "We study a different subject and provide other results. " * 4),
+    ]
+
+    overview = retrieval._overview_evidence("What does the survey contribute?", corpus)
+
+    assert [item["id"] for item in overview] == [
+        "survey-abstract", "survey-conclusion", "survey-intro",
+    ]
+    assert all(item["selection_reason"] == "overview" for item in overview)
+    assert retrieval._overview_evidence("What is quantum entanglement?", corpus) == []
+
+
+def test_dimension_list_uses_first_direct_enumeration():
+    abstract = _selection_result(
+        "abstract", "Six dimensions of trustworthiness: factuality, robustness, "
+        "fairness, transparency, accountability, and privacy.", None,
+        "survey", "survey.pdf", page=1,
+    )
+    conclusion = _selection_result(
+        "conclusion", "Six dimensions of trustworthiness: actuality, robustness, "
+        "fairness, transparency, accountability, and privacy.", None,
+        "survey", "survey.pdf", page=33,
+    )
+
+    selected = retrieval._overview_evidence(
+        "What are dimension of trustworthiness?", [conclusion, abstract]
+    )
+
+    assert [item["id"] for item in selected] == ["abstract"]
+    assert selected[0]["selection_reason"] == "direct_list"
+
+
+def test_selected_paper_summary_keeps_structural_evidence_below_reranker_floor(
+    monkeypatch
+):
+    rows = [
+        {"id": "intro", "text": "We propose a framework to assess six dimensions of trust. " * 4,
+         "metadata": {"source": "survey.pdf", "title": "Survey", "section": "Abstract",
+                      "page": 1, "file_hash": "survey"}, "distance": 0.1},
+        {"id": "conclusion", "text": "The conclusion reviews the framework and benchmark results. " * 4,
+         "metadata": {"source": "survey.pdf", "title": "Survey", "section": "Conclusion",
+                      "page": 10, "file_hash": "survey"}, "distance": 0.2},
+    ]
+    collection = FakeCollection(rows)
+    monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
+    monkeypatch.setattr(retrieval, "_get_committed_snapshot", committed_snapshot)
+    monkeypatch.setattr(retrieval, "get_embedding_model", lambda: FakeEmbeddingModel())
+    monkeypatch.setattr(
+        retrieval, "get_index_config",
+        lambda: __import__("src.index_config", fromlist=["IndexConfig"]).IndexConfig(
+            embedding_dimension=2
+        ),
+    )
+
+    class WeakCrossEncoder:
+        def predict(self, pairs, batch_size, show_progress_bar):
+            return [0.001 for _ in pairs]
+
+    monkeypatch.setattr(retrieval, "_create_reranker", lambda model_name: WeakCrossEncoder())
+
+    hits = retrieval.retrieve(
+        "Summarize this paper.", paper="survey.pdf", retrieval_mode="hybrid-rerank"
+    )
+    assert {item["id"] for item in hits} == {"intro", "conclusion"}
+    assert all(item["source"] == "survey.pdf" for item in hits)
+    assert all(item["selection_reason"] == "overview" for item in hits)
 
 
 def test_generation_context_uses_retrieved_citation_metadata(collection, monkeypatch):
