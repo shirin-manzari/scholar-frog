@@ -15,8 +15,52 @@ from src.index_config import IndexCompatibilityError, new_metadata, read_metadat
 from src.retrieve import RETRIEVAL_MODES, RetrievalConfig, retrieve
 from src.sync import (INDEX_LOCK, SyncError, _read_manifest,
                       manifest_path as sync_manifest_path, sync_library)
+from src.evaluate import DEFAULT_DATASET, evaluate_dataset, write_report
 
 console = Console()
+
+
+def evaluate_main(argv=None):
+    parser = argparse.ArgumentParser(
+        description="Evaluate Scholar Frog against a versioned golden question set."
+    )
+    parser.add_argument("--dataset", default=str(DEFAULT_DATASET),
+                        help="Versioned evaluation JSON file")
+    parser.add_argument("--top-k", type=int, default=5,
+                        help="Retrieved passages to evaluate (default: 5)")
+    parser.add_argument("--retrieval", choices=RETRIEVAL_MODES,
+                        help="Retrieval mode (default: RETRIEVAL_MODE)")
+    parser.add_argument("--generate", action="store_true",
+                        help="Also call the configured LLM and measure citations/abstentions")
+    parser.add_argument("--output", help="Write the full JSON report to this path")
+    args = parser.parse_args(argv)
+    try:
+        report = evaluate_dataset(
+            args.dataset, top_k=args.top_k, retrieval_mode=args.retrieval,
+            include_generation=args.generate,
+        )
+        if args.output:
+            write_report(report, args.output)
+    except (ValueError, IndexCompatibilityError, RuntimeError, ImportError, OSError) as exc:
+        console.print(f"[red]Evaluation failed:[/red] {exc}")
+        return 1
+
+    metrics = report["metrics"]
+    console.print(f"[bold]Evaluation:[/bold] {report['dataset']} (v{report['dataset_version']})")
+    recall_key = f"retrieval_recall_at_{report['top_k']}"
+    console.print(f"Retrieval recall@{report['top_k']}: {metrics[recall_key]}")
+    console.print(f"Mean retrieval latency: {metrics['mean_retrieval_latency_ms']} ms")
+    if args.generate:
+        console.print(f"Generation outcome accuracy: {metrics['generation_outcome_accuracy']}")
+        console.print(f"Abstention correctness: {metrics['abstention_correctness']}")
+        console.print(f"Citation locator precision: {metrics['citation_locator_precision']}")
+        console.print(f"Mean generation latency: {metrics['mean_generation_latency_ms']} ms")
+    console.print("Per-paper retrieval coverage:")
+    for source, coverage in metrics["per_paper_coverage"].items():
+        console.print(f"  {source}: {coverage['retrieval_hits']}/{coverage['expected_cases']} ({coverage['recall']})")
+    if args.output:
+        console.print(f"[green]Full report written to {args.output}[/green]")
+    return 0
 
 
 def sync_main(argv=None):
@@ -60,6 +104,8 @@ def main():
         return index_main(sys.argv[2:])
     if len(sys.argv) > 1 and sys.argv[1] == "sync":
         return sync_main(sys.argv[2:])
+    if len(sys.argv) > 1 and sys.argv[1] == "evaluate":
+        return evaluate_main(sys.argv[2:])
 
     parser = argparse.ArgumentParser(description="Ask Scholar Frog a question across your PDF papers.")
     try:

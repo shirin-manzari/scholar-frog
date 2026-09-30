@@ -20,3 +20,20 @@ python ask.py "What methods do these papers use?"
 ```
 
 Requires Python 3.10+, Ollama, and text-based PDFs. See `.env.example` for options.
+
+## Evaluate retrieval quality
+
+The checked-in `evaluations/golden-v1.json` is a small, manually reviewed set
+of questions for the two sample papers in `papers/`. It records expected source
+pages, including one out-of-corpus question that should abstain. Run retrieval
+metrics without calling an LLM:
+
+```sh
+python ask.py evaluate --output evaluation-results/latest.json
+```
+
+Add `--generate` to measure generated-answer outcome accuracy, abstention
+correctness, and citation locator precision. It uses your configured LLM and
+can therefore be slower or incur provider costs. Update the golden set only
+after manually checking its source/page evidence; retain old versions so
+quality changes remain comparable.
