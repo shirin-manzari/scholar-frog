@@ -332,6 +332,64 @@ def chunk_text(text: str, size: int | None = None,
     return [chunk for _, chunk in chunk_sections(text, size, overlap)]
 
 
+def _collapsed_with_positions(text: str) -> tuple[str, list[int]]:
+    """Collapse whitespace while retaining an offset into the extracted page."""
+    characters = []
+    positions = []
+    in_whitespace = False
+    for index, char in enumerate(text):
+        if char.isspace():
+            if characters and not in_whitespace:
+                characters.append(" ")
+                positions.append(index)
+            in_whitespace = True
+        else:
+            characters.append(char)
+            positions.append(index)
+            in_whitespace = False
+    return "".join(characters).strip(), positions
+
+
+def chunk_sections_with_locations(
+    text: str, size: int | None = None, overlap: int | None = None,
+) -> list[tuple[str, str, int | None, int | None]]:
+    """Return chunks plus approximate character offsets in their extracted page.
+
+    The offset is into the post-extraction page text, not a PDF rendering
+    coordinate. It stays useful when Markdown formatting changes whitespace and
+    gives callers a compact, stable passage locator without changing retrieval
+    text or chunking behavior.
+    """
+    page, page_positions = _collapsed_with_positions(text)
+    located = []
+    previous_start = 0
+    for section, chunk in chunk_sections(text, size, overlap):
+        needle, _ = _collapsed_with_positions(chunk)
+        start = page.find(needle, previous_start) if needle else -1
+        if start < 0:
+            # Overlap is concatenated without its original paragraph spacing.
+            # Locate the first and last substantial portions when the complete
+            # chunk cannot be represented as one contiguous Markdown string.
+            prefix = needle[:80].rstrip()
+            suffix = needle[-80:].lstrip()
+            start = page.find(prefix, previous_start) if prefix else -1
+            end_index = page.find(suffix, max(start, previous_start)) if suffix else -1
+            if start >= 0 and end_index >= start:
+                end = end_index + len(suffix)
+            else:
+                start, end = -1, -1
+        else:
+            end = start + len(needle)
+        if start >= 0 and end > start and end <= len(page_positions):
+            character_start = page_positions[start]
+            character_end = page_positions[end - 1] + 1
+            previous_start = start
+        else:
+            character_start = character_end = None
+        located.append((section, chunk, character_start, character_end))
+    return located
+
+
 def guess_title(pdf_path: Path, first_page_text: str) -> str:
     """Prefer the first level-1 Markdown heading, then a useful text line."""
     for line in first_page_text.splitlines():

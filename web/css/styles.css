@@ -137,6 +137,7 @@ code { font-size: 12px; }
 .references { display: grid; gap: 9px; }
 .reference { padding: 12px 14px; border: 1px solid var(--line); border-radius: 9px; background: #fff; }
 .reference summary { cursor: pointer; font-size: 13px; font-weight: 700; line-height: 1.5; }
+.reference .passage-location { margin: 10px 0 0; color: var(--soft); font-size: 11px; line-height: 1.4; }
 .reference p { margin: 13px 0 0; color: var(--muted); white-space: pre-wrap; line-height: 1.65; font-size: 13px; }
 .reference a { display: inline-block; margin-top: 12px; color: var(--accent-ink); font-size: 13px; }
 .semantic-support { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }

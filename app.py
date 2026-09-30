@@ -85,7 +85,11 @@ def ask_question(question, paper=None):
         "answer": result.answer,
         "references": [
             {"id": item.evidence_id, "reference": item.reference, "source": item.source,
-             "page": item.page, "text": plain_text_for_display(item.text)}
+             "page": item.page, "text": plain_text_for_display(item.text),
+             "passage": (item.metadata.get("chunk_index", -1) + 1
+                         if isinstance(item.metadata.get("chunk_index"), int) else None),
+             "character_start": item.metadata.get("character_start"),
+             "character_end": item.metadata.get("character_end")}
             for item in cited
         ],
         "warnings": result.validation.coverage_warnings if cited else [],

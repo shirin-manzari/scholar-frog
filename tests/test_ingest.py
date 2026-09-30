@@ -2,6 +2,7 @@ from pathlib import Path
 
 from src.ingest import (
     chunk_sections,
+    chunk_sections_with_locations,
     chunk_text,
     guess_title,
     remove_repeated_margins,
@@ -48,6 +49,26 @@ def test_heading_sections_hard_split_and_keep_overlap_within_size():
 
 def test_chunk_text_preserves_overlap_for_oversized_content():
     assert chunk_text("abcdefghij", size=6, overlap=2) == ["abcdef", "efghij"]
+
+
+def test_chunk_locations_point_to_the_matching_extracted_page_text():
+    text = "# Methods\n\nFirst paragraph.\n\nSecond paragraph."
+
+    chunks = chunk_sections_with_locations(text, size=100, overlap=10)
+
+    assert [(section, chunk) for section, chunk, _, _ in chunks] == [
+        ("Methods", "# Methods\nFirst paragraph.\nSecond paragraph.")
+    ]
+    _, chunk, start, end = chunks[0]
+    assert text[start:end].replace("\n\n", "\n") == chunk
+
+
+def test_chunk_locations_cover_overlapping_hard_splits():
+    chunks = chunk_sections_with_locations("abcdefghij", size=6, overlap=2)
+
+    assert [(chunk, start, end) for _, chunk, start, end in chunks] == [
+        ("abcdef", 0, 6), ("efghij", 4, 10)
+    ]
 
 
 def test_guess_title_prefers_level_one_markdown_heading():

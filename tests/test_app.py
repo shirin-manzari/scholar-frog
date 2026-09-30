@@ -114,3 +114,25 @@ def test_ask_returns_semantic_verdicts_for_ui_display(tmp_path, monkeypatch):
     ))
 
     assert app.ask_question("Question?")["semantic_verdicts"] == verdicts
+
+
+def test_ask_returns_passage_location_for_cited_evidence(tmp_path, monkeypatch):
+    (tmp_path / "one.pdf").write_bytes(b"%PDF-")
+    monkeypatch.setattr(app, "PAPERS", tmp_path)
+    monkeypatch.setattr(app, "retrieve", lambda *args, **kwargs: [])
+    evidence = SimpleNamespace(
+        evidence_id="E1", reference="Paper, page 2", source="one.pdf", page=2,
+        text="A **matched** passage.",
+        metadata={"chunk_index": 3, "character_start": 14, "character_end": 36},
+    )
+    monkeypatch.setattr(app, "generate_answer", lambda question, chunks: SimpleNamespace(
+        status=GenerationStatus.ANSWERED, answer="Answer [E1].",
+        validation=SimpleNamespace(valid_evidence=[evidence], coverage_warnings=[],
+                                   semantic_support="not_checked", semantic_verdicts=[]),
+    ))
+
+    assert app.ask_question("Question?")["references"] == [{
+        "id": "E1", "reference": "Paper, page 2", "source": "one.pdf", "page": 2,
+        "text": "A matched passage.", "passage": 4,
+        "character_start": 14, "character_end": 36,
+    }]

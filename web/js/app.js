@@ -441,7 +441,15 @@ function renderAnswer(data, bubble, turn) {
       card.className = "reference";
       card.id = `reference-${turn}-${item.id}`;
       const summary = document.createElement("summary");
-      summary.textContent = `[${item.id}] ${withoutBoldMarkers(item.reference)}`;
+      const passageLabel = item.passage ? ` · passage ${item.passage}` : "";
+      summary.textContent = `[${item.id}] ${withoutBoldMarkers(item.reference)}${passageLabel}`;
+      const location = document.createElement("p");
+      location.className = "passage-location";
+      const characterRange = Number.isInteger(item.character_start)
+        && Number.isInteger(item.character_end)
+        ? ` · extracted characters ${item.character_start}–${item.character_end}`
+        : "";
+      location.textContent = `Exact retrieved passage${characterRange}`;
       const excerpt = document.createElement("p");
       const excerptText = plainDisplayText(item.text);
       const publicationLine =
@@ -458,7 +466,7 @@ function renderAnswer(data, bubble, turn) {
           excerptText.slice(publicationStart + publicationLine.length),
         );
       }
-      card.append(summary, excerpt);
+      card.append(summary, location, excerpt);
       if (item.source) {
         const link = paperLink(item.source, item.page);
         link.textContent = "Open paper ↗";

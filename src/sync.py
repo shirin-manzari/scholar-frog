@@ -491,15 +491,21 @@ def _prepare(item: dict, digest: str, paths: list[str]) -> dict:
     title = ingest.guess_title(item["absolute"], pages[0][1])
     ids, documents, metadatas = [], [], []
     for page, text in pages:
-        for index, (section, chunk) in enumerate(ingest.chunk_sections(text)):
+        for index, (section, chunk, character_start, character_end) in enumerate(
+            ingest.chunk_sections_with_locations(text)
+        ):
             ids.append(f"{digest}-{page}-{index}")
             documents.append(chunk)
-            metadatas.append({
+            metadata = {
                 "source": paths[0], "source_paths": json.dumps(paths),
                 "title": title, "section": section, "page": int(page),
                 "chunk_index": index,
                 "file_hash": digest, "document_id": digest,
-            })
+            }
+            if character_start is not None:
+                metadata["character_start"] = character_start
+                metadata["character_end"] = character_end
+            metadatas.append(metadata)
     vectors = []
     if documents:
         config = ingest.get_index_config()
