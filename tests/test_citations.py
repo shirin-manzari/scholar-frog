@@ -118,6 +118,24 @@ def test_semantic_verdict_requires_every_claim_once_and_boolean_support():
     assert not _parse_semantic_verdict(string_boolean, claims)[0]
 
 
+def test_semantic_verdict_reason_is_retained_for_a_displayed_answer(monkeypatch):
+    def fake_call(backend, system, user):
+        if system == SEMANTIC_VERIFIER_SYSTEM:
+            return json.dumps({"verdicts": [
+                {"claim_id": "C1", "supported": True, "reason": "The result is directly stated."},
+            ]})
+        return _answer("A result improved [E1].")
+
+    monkeypatch.setattr("src.generate._call_backend", fake_call)
+    result = generate_answer("What improved?", chunks(), max_retries=0,
+                             semantic_validation_enabled=True)
+
+    assert result.validation.semantic_verdicts == [{
+        "claim_id": "C1", "claim": "A result improved.", "supported": True,
+        "reason": "The result is directly stated.",
+    }]
+
+
 def test_unsupported_semantic_claim_is_hidden(monkeypatch):
     def fake_call(backend, system, user):
         if system == SEMANTIC_VERIFIER_SYSTEM:

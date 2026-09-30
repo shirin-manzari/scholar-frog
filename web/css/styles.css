@@ -139,6 +139,10 @@ code { font-size: 12px; }
 .reference summary { cursor: pointer; font-size: 13px; font-weight: 700; line-height: 1.5; }
 .reference p { margin: 13px 0 0; color: var(--muted); white-space: pre-wrap; line-height: 1.65; font-size: 13px; }
 .reference a { display: inline-block; margin-top: 12px; color: var(--accent-ink); font-size: 13px; }
+.semantic-support { margin-top: 18px; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.semantic-support summary { cursor: pointer; color: var(--accent-ink); font-weight: 700; }
+.semantic-support p { margin: 8px 0; }
+.semantic-verdicts { margin: 8px 0 0; padding-left: 19px; }
 .warnings { color: var(--accent-ink); font-size: 13px; line-height: 1.5; }
 .composer-area { flex: none; padding: 16px clamp(20px, 6vw, 78px) 20px; border-top: 1px solid var(--line); background: var(--bg); }
 .paper-selection { display: flex; align-items: center; gap: 10px; width: min(100%, 760px); margin: 0 auto 10px; color: var(--muted); font-size: 13px; }

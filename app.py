@@ -90,6 +90,7 @@ def ask_question(question, paper=None):
         ],
         "warnings": result.validation.coverage_warnings if cited else [],
         "semantic_support": result.validation.semantic_support,
+        "semantic_verdicts": getattr(result.validation, "semantic_verdicts", []),
     }
 
 

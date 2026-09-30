@@ -99,3 +99,18 @@ def test_ask_passes_selected_paper_and_rejects_missing_selection(tmp_path, monke
     with pytest.raises(ValueError, match="no longer in the library"):
         app.ask_question("Summarize this paper.", paper="missing.pdf")
     assert len(observed) == 1
+
+
+def test_ask_returns_semantic_verdicts_for_ui_display(tmp_path, monkeypatch):
+    (tmp_path / "one.pdf").write_bytes(b"%PDF-")
+    monkeypatch.setattr(app, "PAPERS", tmp_path)
+    monkeypatch.setattr(app, "retrieve", lambda *args, **kwargs: [])
+    verdicts = [{"claim_id": "C1", "claim": "A claim.", "supported": True,
+                 "reason": "Directly stated."}]
+    monkeypatch.setattr(app, "generate_answer", lambda question, chunks: SimpleNamespace(
+        status=GenerationStatus.ABSTAINED, answer="No answer",
+        validation=SimpleNamespace(valid_evidence=[], coverage_warnings=[],
+                                   semantic_support="passed", semantic_verdicts=verdicts),
+    ))
+
+    assert app.ask_question("Question?")["semantic_verdicts"] == verdicts

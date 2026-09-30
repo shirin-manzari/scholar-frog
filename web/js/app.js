@@ -72,6 +72,10 @@ function appendInlineMarkdown(container, text, references, turn) {
       link.className = "citation";
       link.href = `#reference-${turn}-${evidenceId}`;
       link.textContent = token;
+      link.addEventListener("click", () => {
+        const excerpt = document.getElementById(`reference-${turn}-${evidenceId}`);
+        if (excerpt) excerpt.open = true;
+      });
       container.append(link);
     } else if (/^\[E\d+\]$/.test(token)) {
       container.append(document.createTextNode(token));
@@ -420,6 +424,11 @@ function renderAnswer(data, bubble, turn) {
   answer.className = "answer";
   bubble.append(heading, answer);
   const references = new Map(data.references.map((item) => [item.id, item]));
+  // A running server from an earlier release does not yet include this optional
+  // field. Keep the UI backwards-compatible during a browser refresh/restart.
+  const semanticVerdicts = Array.isArray(data.semantic_verdicts)
+    ? data.semantic_verdicts
+    : [];
   renderMarkdownAnswer(answer, data.answer, references, turn);
 
   if (data.references.length) {
@@ -458,6 +467,29 @@ function renderAnswer(data, bubble, turn) {
       list.append(card);
     }
     bubble.append(title, list);
+  }
+  if (["passed", "failed"].includes(data.semantic_support)) {
+    const support = document.createElement("details");
+    support.className = "semantic-support";
+    const summary = document.createElement("summary");
+    summary.textContent = data.semantic_support === "passed"
+      ? "Evidence check: LLM-reviewed"
+      : "Evidence check: review needed";
+    const note = document.createElement("p");
+    note.textContent = "This checks whether cited excerpts appear to support the answer. It is a guardrail, not independent verification.";
+    support.append(summary, note);
+    if (semanticVerdicts.length) {
+      const verdicts = document.createElement("ul");
+      verdicts.className = "semantic-verdicts";
+      for (const verdict of semanticVerdicts) {
+        const item = document.createElement("li");
+        const state = verdict.supported ? "supported" : "not supported";
+        item.textContent = `${verdict.claim || verdict.claim_id}: ${state}. ${verdict.reason}`;
+        verdicts.append(item);
+      }
+      support.append(verdicts);
+    }
+    bubble.append(support);
   }
   if (data.warnings.length) {
     const title = document.createElement("h3");

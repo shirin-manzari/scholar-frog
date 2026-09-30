@@ -109,54 +109,69 @@ def build_semantic_verification_prompt(
     return json.dumps(payload, ensure_ascii=False)
 
 
-def _parse_semantic_verdict(raw: str, claims: list[CitedClaim]) -> tuple[bool, list[str]]:
+def _parse_semantic_verdict_details(
+    raw: str, claims: list[CitedClaim]
+) -> tuple[bool, list[str], list[dict]]:
     expected = {claim.claim_id for claim in claims}
     try:
         payload = json.loads(raw)
     except (TypeError, json.JSONDecodeError):
-        return False, ["Semantic verifier response is not valid JSON."]
+        return False, ["Semantic verifier response is not valid JSON."], []
     if not isinstance(payload, dict) or set(payload) != {"verdicts"}:
-        return False, ["Semantic verifier response must contain only a verdicts list."]
+        return False, ["Semantic verifier response must contain only a verdicts list."], []
     verdicts = payload["verdicts"]
     if not isinstance(verdicts, list):
-        return False, ["Semantic verifier verdicts must be a list."]
+        return False, ["Semantic verifier verdicts must be a list."], []
 
     seen = set()
     unsupported = []
+    details = []
     for verdict in verdicts:
         if not isinstance(verdict, dict) or set(verdict) != {"claim_id", "supported", "reason"}:
-            return False, ["Semantic verifier returned a malformed verdict."]
+            return False, ["Semantic verifier returned a malformed verdict."], []
         claim_id = verdict["claim_id"]
         supported = verdict["supported"]
         reason = verdict["reason"]
         if (not isinstance(claim_id, str) or claim_id not in expected
                 or claim_id in seen):
-            return False, ["Semantic verifier returned unknown, missing, or duplicate claim IDs."]
+            return False, ["Semantic verifier returned unknown, missing, or duplicate claim IDs."], []
         if not isinstance(supported, bool) or not isinstance(reason, str):
-            return False, [f"Semantic verifier returned invalid fields for {claim_id}."]
+            return False, [f"Semantic verifier returned invalid fields for {claim_id}."], []
         seen.add(claim_id)
+        details.append({"claim_id": claim_id, "supported": supported, "reason": reason})
         if not supported:
-            unsupported.append(f"Claim {claim_id} is not supported by its cited evidence.")
+            unsupported.append(f"Claim {claim_id} is not supported by its cited evidence: {reason}")
     if seen != expected:
-        return False, ["Semantic verifier returned unknown, missing, or duplicate claim IDs."]
-    return not unsupported, unsupported
+        return False, ["Semantic verifier returned unknown, missing, or duplicate claim IDs."], []
+    return not unsupported, unsupported, details
+
+
+def _parse_semantic_verdict(raw: str, claims: list[CitedClaim]) -> tuple[bool, list[str]]:
+    """Compatibility wrapper for callers that only need pass/fail and errors."""
+    passed, errors, _ = _parse_semantic_verdict_details(raw, claims)
+    return passed, errors
 
 
 def _verify_semantic_support(
     answer: str, evidence: list[Evidence], backend: str
-) -> tuple[bool, list[str]]:
+) -> tuple[bool, list[str], list[dict]]:
     claims = extract_cited_claims(answer)
     if not claims:
-        return False, ["No cited factual claims could be extracted for semantic verification."]
+        return False, ["No cited factual claims could be extracted for semantic verification."], []
     evidence_ids = {item.evidence_id for item in evidence}
     if any(set(claim.evidence_ids) - evidence_ids for claim in claims):
-        return False, ["A claim refers to evidence that was not supplied for verification."]
+        return False, ["A claim refers to evidence that was not supplied for verification."], []
     prompt = build_semantic_verification_prompt(claims, evidence)
     try:
         raw = _call_backend(backend, SEMANTIC_VERIFIER_SYSTEM, prompt)
     except Exception as exc:
-        return False, [f"Semantic verification could not be completed: {exc}"]
-    return _parse_semantic_verdict(raw, claims)
+        return False, [f"Semantic verification could not be completed: {exc}"], []
+    passed, errors, verdicts = _parse_semantic_verdict_details(raw, claims)
+    claim_text = {claim.claim_id: claim.text for claim in claims}
+    return passed, errors, [
+        {**verdict, "claim": claim_text[verdict["claim_id"]]}
+        for verdict in verdicts
+    ]
 
 
 def _parse_outcome(raw: str) -> tuple[GenerationStatus | None, AbstentionReason | None, str | None, str | None]:
@@ -320,10 +335,11 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
             if validation.references_valid:
                 semantic_passed = True
                 if semantic_validation_enabled:
-                    semantic_passed, semantic_errors = _verify_semantic_support(
+                    semantic_passed, semantic_errors, semantic_verdicts = _verify_semantic_support(
                         answer, evidence, backend
                     )
                     validation.semantic_support = "passed" if semantic_passed else "failed"
+                    validation.semantic_verdicts = semantic_verdicts
                     validation.errors.extend(semantic_errors)
                 if semantic_passed:
                     return GenerationResult(answer, original, evidence, validation, attempts,

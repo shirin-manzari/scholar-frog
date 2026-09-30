@@ -47,6 +47,7 @@ class CitationValidation:
     valid_evidence: list[Evidence]
     coverage_warnings: list[str] = field(default_factory=list)
     semantic_support: str = "not_checked"
+    semantic_verdicts: list[dict] = field(default_factory=list)
     applicable: bool = True
 
     @property
