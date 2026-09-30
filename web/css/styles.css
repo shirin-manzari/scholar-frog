@@ -157,10 +157,38 @@ p {
   font-weight: 700;
 }
 .paper-name {
+  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.paper-name-text {
+  display: inline-block;
+  width: max-content;
+  white-space: nowrap;
+  transform: translateX(0);
+  transition: transform .25s ease;
+}
+.paper-link:hover .paper-name.is-overflowing .paper-name-text,
+.paper-link:focus-visible .paper-name.is-overflowing .paper-name-text {
+  transform: translateX(calc(-1 * var(--paper-overflow)));
+  transition: transform var(--paper-scroll-duration) linear .35s;
+}
+@media (prefers-reduced-motion: reduce) {
+  .paper-link:hover .paper-name.is-overflowing,
+  .paper-link:focus-visible .paper-name.is-overflowing {
+    overflow: visible;
+    white-space: normal;
+  }
+  .paper-link:hover .paper-name.is-overflowing .paper-name-text,
+  .paper-link:focus-visible .paper-name.is-overflowing .paper-name-text {
+    width: auto;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    transform: none;
+    transition: none;
+  }
 }
 .paper-list li:hover,
 .paper-list li:focus-within {

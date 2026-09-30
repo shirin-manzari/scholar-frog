@@ -249,11 +249,22 @@ async function refreshStatus() {
         const item = document.createElement("li");
         const link = paperLink(path);
         link.className = "paper-link";
-        link.title = path;
+        link.setAttribute("aria-label", path);
         const name = document.createElement("span");
         name.className = "paper-name";
-        name.textContent = path;
+        const nameText = document.createElement("span");
+        nameText.className = "paper-name-text";
+        nameText.textContent = path;
+        name.append(nameText);
         link.append(name);
+        const updateOverflow = () => {
+          const overflow = Math.ceil(nameText.getBoundingClientRect().width - name.clientWidth);
+          name.classList.toggle("is-overflowing", overflow > 0);
+          name.style.setProperty("--paper-overflow", `${Math.max(0, overflow)}px`);
+          name.style.setProperty("--paper-scroll-duration", `${Math.min(12, Math.max(2.5, overflow / 45))}s`);
+        };
+        link.addEventListener("mouseenter", updateOverflow);
+        link.addEventListener("focus", updateOverflow);
         item.append(link);
         const remove = document.createElement("button");
         remove.className = "delete-paper";
