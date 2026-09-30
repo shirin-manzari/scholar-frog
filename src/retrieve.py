@@ -630,6 +630,9 @@ _THIS_PAPER_MESSAGES = (
     "Frog requires target paper. otherwise frog just vibes.",
     "Choose a paper first. the hat gives knowledge, not telepathy."
 )
+SELECTED_PAPER_NOT_INDEXED_MESSAGE = (
+    "Frog sees the paper, but has not read it yet. sync the library first."
+)
 
 
 def _retrieve_locked(question: str, top_k: int | None = None,
@@ -662,7 +665,7 @@ def _retrieve_locked(question: str, top_k: int | None = None,
             if paper in owner.get("paths", [])
         }
         if len(document_ids) != 1:
-            raise ValueError(f"Selected paper {paper!r} is not in the index. Sync the library and try again.")
+            raise ValueError(SELECTED_PAPER_NOT_INDEXED_MESSAGE)
         document_id = document_ids.pop()
 
     _, correction_corpus, tokenized = _get_bm25_index(collection, snapshot)

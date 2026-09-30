@@ -5,7 +5,7 @@ from urllib.parse import quote
 import pytest
 
 import app
-from app import upload_filename
+from app import MISSING_PAPER_MESSAGES, upload_filename
 from src.citations import GenerationStatus
 
 
@@ -96,9 +96,19 @@ def test_ask_passes_selected_paper_and_rejects_missing_selection(tmp_path, monke
 
     app.ask_question("Summarize this paper.", paper="one.pdf")
     assert observed == [("Summarize this paper.", "one.pdf")]
-    with pytest.raises(ValueError, match="no longer in the library"):
+    with pytest.raises(ValueError, match="Paper moved or renamed|That PDF vanished"):
         app.ask_question("Summarize this paper.", paper="missing.pdf")
     assert len(observed) == 1
+
+
+def test_missing_selected_paper_uses_a_frog_dialogue(tmp_path, monkeypatch):
+    (tmp_path / "one.pdf").write_bytes(b"%PDF-")
+    monkeypatch.setattr(app, "PAPERS", tmp_path)
+    monkeypatch.setattr(app.random, "choice", lambda messages: messages[1])
+
+    with pytest.raises(ValueError, match="wizards"):
+        app.ask_question("Summarize this paper.", paper="missing.pdf")
+    assert MISSING_PAPER_MESSAGES[1] == "That PDF vanished. i blame the wizards."
 
 
 def test_ask_returns_semantic_verdicts_for_ui_display(tmp_path, monkeypatch):

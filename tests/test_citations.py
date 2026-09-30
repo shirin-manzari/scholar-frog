@@ -10,6 +10,7 @@ from src.citations import (
 )
 from src.generate import (
     ABSTENTION_MESSAGES,
+    NO_RELEVANT_EVIDENCE_MESSAGES,
     SEMANTIC_VERIFIER_SYSTEM,
     _parse_semantic_verdict,
     build_semantic_verification_prompt,
@@ -273,11 +274,12 @@ def test_empty_retrieval_abstains_without_calling_backend(monkeypatch):
     assert result.abstention_reason.value == "no_relevant_evidence"
     assert result.validation.outcome == "not_applicable"
     assert result.regeneration_attempts == 0
-    assert result.answer in ABSTENTION_MESSAGES
+    assert result.answer in NO_RELEVANT_EVIDENCE_MESSAGES
 
 
 def test_abstention_dialogue_is_selected_for_each_request(monkeypatch):
-    messages = iter(ABSTENTION_MESSAGES)
+    messages = iter((NO_RELEVANT_EVIDENCE_MESSAGES[0], ABSTENTION_MESSAGES[0],
+                     NO_RELEVANT_EVIDENCE_MESSAGES[1]))
     monkeypatch.setattr("src.generate.random.choice", lambda options: next(messages))
     monkeypatch.setattr("src.generate._call_backend", lambda *args: _abstention())
     answers = [
@@ -285,7 +287,10 @@ def test_abstention_dialogue_is_selected_for_each_request(monkeypatch):
         generate_answer("Q?", chunks(), max_retries=0).answer,
         generate_answer("Q?", []).answer,
     ]
-    assert answers == list(ABSTENTION_MESSAGES)
+    assert answers == [
+        NO_RELEVANT_EVIDENCE_MESSAGES[0], ABSTENTION_MESSAGES[0],
+        NO_RELEVANT_EVIDENCE_MESSAGES[1],
+    ]
 
 
 def test_substantive_uncited_answer_fails_normal_validation_and_retries(monkeypatch):

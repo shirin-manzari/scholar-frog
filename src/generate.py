@@ -24,10 +24,18 @@ ABSTENTION_MESSAGES = (
     "There is evidence, but it is tiny. like me.",
     "Frog senses weak science.",
 )
+NO_RELEVANT_EVIDENCE_MESSAGES = (
+    "Nothing matched. very rude of the literature.",
+    "Frog looked everywhere. the papers said nothing useful.",
+)
 
 
 def _abstention_message() -> str:
     return random.choice(ABSTENTION_MESSAGES)
+
+
+def _no_relevant_evidence_message() -> str:
+    return random.choice(NO_RELEVANT_EVIDENCE_MESSAGES)
 
 
 SYSTEM_PROMPT = """You are Scholar Frog, an academic research assistant. Answer only from
@@ -286,7 +294,7 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
                     semantic_validation_enabled: bool | None = None) -> GenerationResult:
     if not chunks:
         validation = _not_applicable_validation("Citation validation is not applicable to abstentions.")
-        return GenerationResult(_abstention_message(), "", [], validation, 0, [],
+        return GenerationResult(_no_relevant_evidence_message(), "", [], validation, 0, [],
                                 GenerationStatus.ABSTAINED, AbstentionReason.NO_RELEVANT_EVIDENCE)
 
     evidence = assign_evidence(chunks)

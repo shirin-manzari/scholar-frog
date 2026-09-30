@@ -2,6 +2,7 @@
 
 import json
 import os
+import random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
@@ -18,6 +19,10 @@ ROOT = Path(__file__).resolve().parent
 PAPERS = ROOT / "papers"
 WEB = ROOT / "web"
 MAX_PDF_BYTES = 25 * 1024 * 1024
+MISSING_PAPER_MESSAGES = (
+    "Paper moved or renamed. frog searched the whole swamp.",
+    "That PDF vanished. i blame the wizards.",
+)
 
 
 def upload_filename(header):
@@ -73,7 +78,7 @@ def ask_question(question, paper=None):
     if not paper_paths:
         return {"status": "no_papers", "answer": "", "references": [], "warnings": []}
     if paper is not None and paper not in paper_paths:
-        raise ValueError("Selected paper is no longer in the library. Choose another paper.")
+        raise ValueError(random.choice(MISSING_PAPER_MESSAGES))
     config = RetrievalConfig.from_env()
     chunks = _available_chunks(
         retrieve(question, top_k=config.final_results, paper=paper), paper_paths
