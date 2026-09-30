@@ -73,7 +73,9 @@ function appendInlineMarkdown(container, text, references, turn) {
       link.href = `#reference-${turn}-${evidenceId}`;
       link.textContent = token;
       link.addEventListener("click", () => {
-        const excerpt = document.getElementById(`reference-${turn}-${evidenceId}`);
+        const excerpt = document.getElementById(
+          `reference-${turn}-${evidenceId}`,
+        );
         if (excerpt) excerpt.open = true;
       });
       container.append(link);
@@ -235,7 +237,9 @@ async function refreshStatus() {
     for (const path of papers) selector.add(new Option(path, path));
     selector.value = papers.includes(previousSelection)
       ? previousSelection
-      : papers.length === 1 ? papers[0] : "";
+      : papers.length === 1
+        ? papers[0]
+        : "";
     const list = $("paper-list");
     list.replaceChildren();
     if (!papers.length) {
@@ -433,7 +437,7 @@ function renderAnswer(data, bubble, turn) {
 
   if (data.references.length) {
     const title = document.createElement("h3");
-    title.textContent = "Referenced excerpts";
+    title.textContent = "Referenced excerpts:";
     const list = document.createElement("div");
     list.className = "references";
     for (const item of data.references) {
@@ -443,13 +447,11 @@ function renderAnswer(data, bubble, turn) {
       const summary = document.createElement("summary");
       const passageLabel = item.passage ? ` · passage ${item.passage}` : "";
       summary.textContent = `[${item.id}] ${withoutBoldMarkers(item.reference)}${passageLabel}`;
-      const location = document.createElement("p");
-      location.className = "passage-location";
-      const characterRange = Number.isInteger(item.character_start)
-        && Number.isInteger(item.character_end)
-        ? ` · extracted characters ${item.character_start}–${item.character_end}`
-        : "";
-      location.textContent = `Exact retrieved passage${characterRange}`;
+      const characterRange =
+        Number.isInteger(item.character_start) &&
+        Number.isInteger(item.character_end)
+          ? ` · extracted characters ${item.character_start}–${item.character_end}`
+          : "";
       const excerpt = document.createElement("p");
       const excerptText = plainDisplayText(item.text);
       const publicationLine =
@@ -466,7 +468,14 @@ function renderAnswer(data, bubble, turn) {
           excerptText.slice(publicationStart + publicationLine.length),
         );
       }
-      card.append(summary, location, excerpt);
+      if (characterRange) {
+        const location = document.createElement("p");
+        location.className = "passage-location";
+        location.textContent = characterRange.slice(3);
+        card.append(summary, location, excerpt);
+      } else {
+        card.append(summary, excerpt);
+      }
       if (item.source) {
         const link = paperLink(item.source, item.page);
         link.textContent = "Open paper ↗";
@@ -480,11 +489,13 @@ function renderAnswer(data, bubble, turn) {
     const support = document.createElement("details");
     support.className = "semantic-support";
     const summary = document.createElement("summary");
-    summary.textContent = data.semantic_support === "passed"
-      ? "Evidence check: LLM-reviewed"
-      : "Evidence check: review needed";
+    summary.textContent =
+      data.semantic_support === "passed"
+        ? "Evidence check: LLM-reviewed"
+        : "Evidence check: review needed";
     const note = document.createElement("p");
-    note.textContent = "This checks whether cited excerpts appear to support the answer. It is a guardrail, not independent verification.";
+    note.textContent =
+      "This checks whether cited excerpts appear to support the answer. It is a guardrail, not independent verification.";
     support.append(summary, note);
     if (semanticVerdicts.length) {
       const verdicts = document.createElement("ul");

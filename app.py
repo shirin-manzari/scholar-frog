@@ -11,7 +11,7 @@ from src.generate import generate_answer
 from src.index_config import IndexCompatibilityError
 from src.retrieve import RetrievalConfig, retrieve
 from src.sync import SyncDeletionConfirmationRequired, SyncError, sync_library
-from src.text_normalize import plain_text_for_display
+from src.text_normalize import evidence_excerpt_for_display
 
 
 ROOT = Path(__file__).resolve().parent
@@ -85,7 +85,7 @@ def ask_question(question, paper=None):
         "answer": result.answer,
         "references": [
             {"id": item.evidence_id, "reference": item.reference, "source": item.source,
-             "page": item.page, "text": plain_text_for_display(item.text),
+             "page": item.page, "text": evidence_excerpt_for_display(item.text),
              "passage": (item.metadata.get("chunk_index", -1) + 1
                          if isinstance(item.metadata.get("chunk_index"), int) else None),
              "character_start": item.metadata.get("character_start"),

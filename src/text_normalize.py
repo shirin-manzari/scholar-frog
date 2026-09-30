@@ -11,6 +11,12 @@ _MARKDOWN_LINK = re.compile(r"!?\[([^\]]*)\]\([^\s)]+(?:\s+['\"][^)]*['\"])?\)")
 _FENCED_CODE = re.compile(r"```(?:[^\n]*)\n?(.*?)```", re.DOTALL)
 _HEADING_OR_LIST = re.compile(r"(?m)^\s*(?:#{1,6}\s+|[-+*]\s+|\d+[.)]\s+|>\s?)")
 _ESCAPED_MARKDOWN = re.compile(r"\\([\\`*{}\[\]<>_()#+.!-])")
+_BIBLIOGRAPHY_HEADING = re.compile(r"(?im)^\s*#{0,6}\s*(?:references|bibliography)\s*$")
+_BIBLIOGRAPHY_ENTRY = re.compile(r"(?m)^\s*(?:[-+*]\s*)?\[\d{1,4}\]\s+[A-Z]")
+_INLINE_BIBLIOGRAPHY_ENTRY = re.compile(r"\[\d{1,4}\]\s+[A-Z][\w-]+")
+_TRAILING_REFERENCE_LINK = re.compile(
+    r"\s*(?:retrieved from|doi:)\s*!?\[[^\]]+\]\([^)]*\)\.?\s*$", re.IGNORECASE
+)
 
 
 def plain_text_for_display(text: str) -> str:
@@ -35,3 +41,30 @@ def plain_text_for_display(text: str) -> str:
     text = re.sub(r"(?<!\w)[*_]([^\n*_]+?)[*_](?!\w)", r"\1", text)
     text = _HEADING_OR_LIST.sub("", text)
     return " ".join(text.split())
+
+
+def evidence_excerpt_for_display(text: str) -> str:
+    """Return a readable evidence excerpt without trailing bibliography entries.
+
+    A retrieval chunk can cross from prose into a reference list. The list stays
+    in the indexed chunk for retrieval and generation, but it obscures the
+    useful passage in a human-facing evidence card.
+    """
+    if not isinstance(text, str):
+        return ""
+    heading = _BIBLIOGRAPHY_HEADING.search(text)
+    entry = _BIBLIOGRAPHY_ENTRY.search(text)
+    cut_at = min(
+        (match.start() for match in (heading, entry) if match is not None),
+        default=None,
+    )
+    if cut_at is None:
+        # Some converters collapse bibliography lines. Require two numbered,
+        # author-style entries so ordinary inline citations remain intact.
+        inline_entries = list(_INLINE_BIBLIOGRAPHY_ENTRY.finditer(text))
+        if len(inline_entries) >= 2:
+            cut_at = inline_entries[0].start()
+    excerpt = text if cut_at is None else text[:cut_at]
+    if cut_at is not None:
+        excerpt = _TRAILING_REFERENCE_LINK.sub("", excerpt)
+    return plain_text_for_display(excerpt)

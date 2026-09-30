@@ -2,6 +2,7 @@ import hashlib
 import json
 import math
 import os
+import random
 import re
 from collections import Counter
 from dataclasses import dataclass
@@ -624,6 +625,11 @@ def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
 
 
 _THIS_PAPER = re.compile(r"\bthis\s+(?:paper|article|study|survey)\b", re.IGNORECASE)
+_THIS_PAPER_MESSAGES = (
+    "Which paper, boss? frog cannot read minds yet.",
+    "Frog requires target paper. otherwise frog just vibes.",
+    "Choose a paper first. the hat gives knowledge, not telepathy."
+)
 
 
 def _retrieve_locked(question: str, top_k: int | None = None,
@@ -638,7 +644,7 @@ def _retrieve_locked(question: str, top_k: int | None = None,
     if mode not in RETRIEVAL_MODES:
         raise ValueError(f"retrieval_mode must be one of: {', '.join(RETRIEVAL_MODES)}")
     if paper is None and _THIS_PAPER.search(question):
-        raise ValueError("Select a paper before asking about 'this paper'.")
+        raise ValueError(random.choice(_THIS_PAPER_MESSAGES))
 
     collection = get_collection()
     count = collection.count()

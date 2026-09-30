@@ -294,7 +294,7 @@ def test_this_paper_requires_selection_and_unknown_paper_is_rejected(
     monkeypatch.setattr(retrieval, "get_collection", lambda: collection)
     monkeypatch.setattr(retrieval, "_get_committed_snapshot", committed_snapshot)
 
-    with pytest.raises(ValueError, match="Select a paper"):
+    with pytest.raises(ValueError, match="Which paper, boss|frog requires target paper"):
         retrieval.retrieve("Summarize this paper.", retrieval_mode="dense")
     with pytest.raises(ValueError, match="not in the index"):
         retrieval.retrieve("Summarize the findings.", paper="missing.pdf")
