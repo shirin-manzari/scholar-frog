@@ -49,7 +49,13 @@ function withoutBoldMarkers(text) {
 function plainDisplayText(text) {
   return withoutBoldMarkers(text)
     .replace(/&#(?:x20|32);/gi, " ")
+    .replace(/<!--.*?-->/gs, " ")
+    .replace(/\\([\\`*{}\[\]<>_()#+.!-])/g, "$1")
+    .replace(/<\/?[A-Za-z][^>]*>/g, "")
+    .replace(/(?:\*\*|__|~~)(.+?)(?:\*\*|__|~~)/g, "$1")
+    .replace(/(^|[^\w])[*_]([^\n*_]+?)[*_](?!\w)/g, "$1$2")
     .replace(/^#{1,6}[ \t]+/gm, "")
+    .replace(/\s+/g, " ")
     .trim();
 }
 
