@@ -100,6 +100,18 @@ select:focus-visible {
   border: 0;
   border-top: 2px solid var(--accent-ink);
 }
+.chat-history { flex: none; margin-bottom: 20px; }
+.chat-history-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 7px; }
+.chat-history-header h2 { margin: 0; font-size: 16px; }
+#new-chat-button { flex: none; padding: 6px 9px; border: 1px solid var(--accent); border-radius: 7px; color: var(--accent-ink); background: var(--accent-soft); font-size: 11px; font-weight: 700; }
+#new-chat-button:hover { background: var(--accent); color: var(--text); }
+#chat-list { max-height: min(27vh, 230px); overflow-y: auto; overflow-x: hidden; margin: 0; padding: 0; list-style: none; }
+#chat-list li { display: flex; align-items: center; min-width: 0; border-radius: 8px; }
+#chat-list li:hover, #chat-list li.active { background: var(--accent-soft); }
+.chat-open { flex: 1; min-width: 0; overflow: hidden; padding: 8px 9px; border: 0; color: var(--text); background: transparent; text-align: left; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.chat-delete { flex: none; padding: 3px 7px; border: 0; opacity: 0; color: var(--accent-ink); background: transparent; font-size: 17px; line-height: 1; }
+#chat-list li:hover .chat-delete, #chat-list li:focus-within .chat-delete { opacity: 1; }
+.chat-delete:hover { color: var(--text); }
 .sidebar-actions {
   flex: none;
   max-height: 45vh;
@@ -631,6 +643,7 @@ code {
   .paper-section {
     padding: 15px 20px 8px;
   }
+  #chat-list { max-height: 85px; }
   .brand {
     margin-bottom: 14px;
   }

@@ -34,6 +34,144 @@ function showPaperListMessage(message) {
   $("paper-list").replaceChildren(item);
 }
 
+let conversationId = null;
+let sendingMessage = false;
+let activeScope = [];
+const MULTI_SCOPE_VALUE = "__selected_scope__";
+
+function showScopeSelection() {
+  const selector = $("paper-select");
+  const previous = selector.querySelector(`option[value="${MULTI_SCOPE_VALUE}"]`);
+  if (previous) previous.remove();
+  if (activeScope.length > 1 || (activeScope.length === 1 &&
+      ![...selector.options].some((option) => option.value === activeScope[0]))) {
+    const label = activeScope.length > 1
+      ? `${activeScope.length} selected papers` : `Missing: ${activeScope[0]}`;
+    const option = new Option(label, MULTI_SCOPE_VALUE);
+    option.title = activeScope.join(", ");
+    selector.add(option);
+    selector.value = MULTI_SCOPE_VALUE;
+  } else {
+    selector.value = activeScope[0] || "";
+  }
+}
+
+function setChatBusy(busy) {
+  sendingMessage = busy;
+  $("new-chat-button").disabled = busy;
+  for (const button of $("chat-list").querySelectorAll("button")) button.disabled = busy;
+}
+
+async function refreshConversations() {
+  const { conversations } = await request("/api/conversations");
+  const list = $("chat-list");
+  list.replaceChildren();
+  for (const conversation of conversations) {
+    const row = document.createElement("li");
+    row.className = conversation.conversation_id === conversationId ? "active" : "";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.className = "chat-open";
+    open.textContent = conversation.title;
+    open.title = conversation.title;
+    open.disabled = sendingMessage;
+    open.addEventListener("click", () => openConversation(conversation.conversation_id));
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.className = "chat-delete";
+    remove.textContent = "×";
+    remove.title = `Delete chat: ${conversation.title}`;
+    remove.setAttribute("aria-label", remove.title);
+    remove.disabled = sendingMessage;
+    remove.addEventListener("click", () => deleteConversation(conversation.conversation_id));
+    row.append(open, remove);
+    list.append(row);
+  }
+  return conversations;
+}
+
+function renderConversation(conversation) {
+  const feed = $("conversation");
+  feed.replaceChildren();
+  turnNumber = 0;
+  for (const message of conversation.messages) {
+    if (message.role === "user") {
+      const user = appendMessage("user", message.content);
+      if (message.scope?.length) {
+        const label = document.createElement("span");
+        label.className = "question-paper";
+        label.textContent = message.scope.length === 1
+          ? `Paper: ${message.scope[0]}` : `Papers: ${message.scope.join(", ")}`;
+        user.bubble.prepend(label);
+      }
+    } else {
+      const assistant = appendMessage("assistant", "");
+      turnNumber += 1;
+      if (message.response) renderAnswer(message.response, assistant.bubble, turnNumber);
+      else assistant.bubble.textContent = message.content;
+      setScholarFrogState(assistant.frog, "idle");
+    }
+  }
+  if (!conversation.messages.length) showWelcomeConversation();
+}
+
+async function openConversation(id) {
+  if (sendingMessage) return;
+  try {
+    const conversation = await request(`/api/conversations/${encodeURIComponent(id)}`);
+    conversationId = id;
+    localStorage.setItem("scholar-frog-conversation", id);
+    activeScope = conversation.scope;
+    showScopeSelection();
+    renderConversation(conversation);
+    await refreshConversations();
+  } catch (error) {
+    showLibraryMessage(error.message, true);
+  }
+}
+
+async function createConversation() {
+  if (sendingMessage) return;
+  try {
+    const conversation = await postJson("/api/conversations", {
+      document_ids: activeScope,
+    });
+    await openConversation(conversation.conversation_id);
+  } catch (error) {
+    showLibraryMessage(error.message, true);
+  }
+}
+
+async function deleteConversation(id) {
+  if (sendingMessage) return;
+  if (!window.confirm("Delete this chat and its messages? This cannot be undone.")) return;
+  try {
+    await request(`/api/conversations/${encodeURIComponent(id)}`, { method: "DELETE" });
+    const remaining = await refreshConversations();
+    if (id === conversationId) {
+      conversationId = null;
+      if (remaining.length) await openConversation(remaining[0].conversation_id);
+      else await createConversation();
+    }
+  } catch (error) {
+    showLibraryMessage(error.message, true);
+  }
+}
+
+async function initializeChats() {
+  await refreshStatus();
+  try {
+    const conversations = await refreshConversations();
+    const last = localStorage.getItem("scholar-frog-conversation");
+    const restore = conversations.find((item) => item.conversation_id === last)
+      || conversations[0];
+    if (restore) await openConversation(restore.conversation_id);
+    else await createConversation();
+  } catch (error) {
+    showLibraryMessage(error.message, true);
+  }
+}
+
 function paperLink(path, page) {
   const link = document.createElement("a");
   link.href = `/api/paper?path=${encodeURIComponent(path)}${page ? `#page=${page}` : ""}`;
@@ -232,14 +370,9 @@ async function refreshStatus() {
   try {
     const { papers } = await request("/api/status");
     const selector = $("paper-select");
-    const previousSelection = selector.value;
     selector.replaceChildren(new Option("All papers", ""));
     for (const path of papers) selector.add(new Option(path, path));
-    selector.value = papers.includes(previousSelection)
-      ? previousSelection
-      : papers.length === 1
-        ? papers[0]
-        : "";
+    showScopeSelection();
     const list = $("paper-list");
     list.replaceChildren();
     if (!papers.length) {
@@ -447,7 +580,11 @@ function renderAnswer(data, bubble, turn) {
       ? "Scholar Frog"
       : data.status === "abstained"
         ? "No supported answer"
-        : "Answer unavailable";
+        : data.status === "no_papers"
+          ? "No papers yet"
+        : data.status === "clarification"
+          ? "One question first"
+          : "Answer unavailable";
   const answer = document.createElement("div");
   answer.className = "answer";
   bubble.append(heading, answer);
@@ -550,6 +687,23 @@ function renderAnswer(data, bubble, turn) {
 }
 
 $("sync-button").addEventListener("click", syncLibrary);
+$("new-chat-button").addEventListener("click", createConversation);
+$("paper-select").addEventListener("change", async () => {
+  if (!conversationId) return;
+  try {
+    const selected = $("paper-select").value;
+    activeScope = selected && selected !== MULTI_SCOPE_VALUE ? [selected] : [];
+    showScopeSelection();
+    await request(`/api/conversations/${encodeURIComponent(conversationId)}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ document_ids: activeScope }),
+    });
+    await refreshConversations();
+  } catch (error) {
+    showLibraryMessage(error.message, true);
+  }
+});
 $("pdf-file").addEventListener("change", (event) => {
   if (event.target.files[0]) uploadPdf(event.target.files[0]);
 });
@@ -566,17 +720,23 @@ $("question-form").addEventListener("submit", async (event) => {
   const input = $("question");
   const question = input.value.trim();
   if (!question) return;
-  const paper = $("paper-select").value || null;
+  if (!conversationId) {
+    await createConversation();
+    if (!conversationId) return;
+  }
+  const scope = [...activeScope];
   if (turnNumber === 0) $("conversation").replaceChildren();
   const button = $("ask-button");
+  setChatBusy(true);
   button.disabled = true;
   input.disabled = true;
   input.value = "";
   const userMessage = appendMessage("user", question);
-  if (paper) {
+  if (scope.length) {
     const label = document.createElement("span");
     label.className = "question-paper";
-    label.textContent = `Paper: ${paper}`;
+    label.textContent = scope.length === 1
+      ? `Paper: ${scope[0]}` : `Papers: ${scope.join(", ")}`;
     userMessage.bubble.prepend(label);
   }
   const { bubble: response, frog } = appendMessage("assistant", "");
@@ -585,19 +745,17 @@ $("question-form").addEventListener("submit", async (event) => {
   setScholarFrogState(frog, "talking");
   const turn = ++turnNumber;
   try {
-    const data = await postJson("/api/ask", { question, paper });
+    const data = await postJson("/api/ask", {
+      conversation_id: conversationId, question,
+      document_ids: scope,
+    });
     stopThinkingDialogue();
-    if (data.status === "no_papers") {
-      response.textContent = randomNoPapersMessage();
-      setScholarFrogState(frog, "idle");
-      await refreshStatus();
-    } else {
-      if (data.status === "answered") {
-        await showAnswerReadyDialogue(response);
-      }
-      renderAnswer(data, response, turn);
-      setScholarFrogState(frog, data.status === "answered" ? "idle" : "crying");
+    if (data.status === "answered") {
+      await showAnswerReadyDialogue(response);
     }
+    renderAnswer(data, response, turn);
+    setScholarFrogState(frog, ["answered", "clarification", "no_papers"].includes(data.status) ? "idle" : "crying");
+    await refreshConversations();
   } catch (error) {
     stopThinkingDialogue();
     response.classList.add("error");
@@ -607,9 +765,10 @@ $("question-form").addEventListener("submit", async (event) => {
     response.classList.remove("pending");
     if (frog.dataset.state === "talking") setScholarFrogState(frog, "idle");
     button.disabled = false;
+    setChatBusy(false);
     input.disabled = false;
     input.focus();
     scrollToLatest();
   }
 });
-refreshStatus();
+initializeChats();

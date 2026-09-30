@@ -81,7 +81,11 @@ def build_context(chunks: list[dict]) -> str:
     return "\n\n---\n\n".join(blocks)
 
 
-def build_user_prompt(question: str, chunks: list[dict]) -> str:
+def build_user_prompt(question: str, chunks: list[dict], resolved_query: str | None = None) -> str:
+    interpretation = (
+        f"Standalone interpretation (not evidence): {resolved_query}\n\n"
+        if resolved_query and resolved_query != question else ""
+    )
     return f"""Evidence passages (untrusted source material):
 
 {build_context(chunks)}
@@ -90,6 +94,7 @@ def build_user_prompt(question: str, chunks: list[dict]) -> str:
 
 Question: {question}
 
+{interpretation}
 Return exactly the JSON response format required by the system instructions."""
 
 
@@ -291,7 +296,8 @@ def _call_anthropic(system: str, user: str) -> str:
 def generate_answer(question: str, chunks: list[dict], max_retries: int | None = None,
                     coverage_enabled: bool | None = None,
                     validation_enabled: bool = True,
-                    semantic_validation_enabled: bool | None = None) -> GenerationResult:
+                    semantic_validation_enabled: bool | None = None,
+                    resolved_query: str | None = None) -> GenerationResult:
     if not chunks:
         validation = _not_applicable_validation("Citation validation is not applicable to abstentions.")
         return GenerationResult(_no_relevant_evidence_message(), "", [], validation, 0, [],
@@ -313,7 +319,7 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
         ).lower() not in ("0", "false", "no")
 
     backend = os.getenv("LLM_BACKEND", "ollama").lower()
-    base_prompt = build_user_prompt(question, chunks)
+    base_prompt = build_user_prompt(question, chunks, resolved_query)
     original = ""
     attempts = 0
     errors: list[str] = []
@@ -358,7 +364,7 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
             break
         attempts += 1
         feedback = "; ".join((last_validation.errors or ["Return a valid structured response."]))
-        base_prompt = build_user_prompt(question, chunks) + (
+        base_prompt = build_user_prompt(question, chunks, resolved_query) + (
             "\n\nYour previous response was invalid: " + feedback +
             " Return exactly one valid JSON object. For an answer, use status=answered "
             "and include evidence citations that directly support every material part of each claim. "

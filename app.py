@@ -1,13 +1,17 @@
 """Small local web interface for the Scholar Frog research pipeline."""
 
 import json
+import logging
 import os
 import random
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
 from src.citations import GenerationStatus
+from src.chat import chat_turn
+from src.conversations import ConversationError, ConversationNotFound, ConversationStore
 from src.generate import generate_answer
 from src.index_config import IndexCompatibilityError
 from src.retrieve import RetrievalConfig, retrieve
@@ -23,6 +27,27 @@ MISSING_PAPER_MESSAGES = (
     "Paper moved or renamed. frog searched the whole swamp.",
     "That PDF vanished. i blame the wizards.",
 )
+CONVERSATIONS = ConversationStore(
+    os.getenv("SCHOLAR_FROG_CONVERSATIONS_DB", str(ROOT / "chroma_db" / "conversations.sqlite3"))
+)
+_conversation_locks = {}
+_conversation_locks_guard = threading.Lock()
+
+
+def conversation_lock(conversation_id):
+    with _conversation_locks_guard:
+        return _conversation_locks.setdefault(conversation_id, threading.Lock())
+
+
+def parse_document_ids(value):
+    if (not isinstance(value, list) or len(value) > 20
+            or any(not isinstance(item, str) or not item for item in value)
+            or len(set(value)) != len(value)):
+        raise ValueError("document_ids must be a list of up to 20 unique paper paths.")
+    unavailable = [item for item in value if item not in library_status()["papers"]]
+    if unavailable:
+        raise ValueError("Selected paper is no longer in the library. Choose another paper.")
+    return value
 
 
 def upload_filename(header):
@@ -84,23 +109,14 @@ def _available_chunks(chunks, paper_paths):
     return available
 
 
-def ask_question(question, paper=None):
-    paper_paths = set(library_status()["papers"])
-    if not paper_paths:
-        return {"status": "no_papers", "answer": "", "references": [], "warnings": []}
-    if paper is not None and paper not in paper_paths:
-        raise ValueError(random.choice(MISSING_PAPER_MESSAGES))
-    config = RetrievalConfig.from_env()
-    chunks = _available_chunks(
-        retrieve(question, top_k=config.final_results, paper=paper), paper_paths
-    )
-    result = generate_answer(question, chunks)
+def generation_payload(result):
     cited = result.validation.valid_evidence if result.status is GenerationStatus.ANSWERED else []
     return {
         "status": result.status.value,
         "answer": result.answer,
         "references": [
             {"id": item.evidence_id, "reference": item.reference, "source": item.source,
+             **({"title": item.title} if getattr(item, "title", None) else {}),
              "page": item.page, "text": evidence_excerpt_for_display(item.text),
              "passage": (item.metadata.get("chunk_index", -1) + 1
                          if isinstance(item.metadata.get("chunk_index"), int) else None),
@@ -114,12 +130,39 @@ def ask_question(question, paper=None):
     }
 
 
+def ask_question(question, paper=None):
+    paper_paths = set(library_status()["papers"])
+    if not paper_paths:
+        return {"status": "no_papers", "answer": "", "references": [], "warnings": []}
+    if paper is not None and paper not in paper_paths:
+        raise ValueError(random.choice(MISSING_PAPER_MESSAGES))
+    config = RetrievalConfig.from_env()
+    chunks = _available_chunks(
+        retrieve(question, top_k=config.final_results, paper=paper), paper_paths
+    )
+    result = generate_answer(question, chunks)
+    return generation_payload(result)
+
+
+def ask_conversation_question(conversation_id, question, document_ids=None):
+    paths = library_status()["papers"]
+    with conversation_lock(conversation_id):
+        return chat_turn(
+            CONVERSATIONS, conversation_id, question, document_ids, paths,
+            retrieve_fn=lambda query, **kwargs: _available_chunks(
+                retrieve(query, **kwargs), set(paths)
+            ),
+            generate_fn=generate_answer, format_fn=generation_payload,
+            top_k=RetrievalConfig.from_env().final_results,
+        )
+
+
 class Handler(BaseHTTPRequestHandler):
     def allowed_request(self):
         if self.headers.get("Host") not in {"127.0.0.1:8765", "localhost:8765"}:
             self.send_json({"error": "Use the local Scholar Frog address."}, 403)
             return False
-        if self.command in {"POST", "DELETE"} and self.headers.get("Origin") not in {
+        if self.command in {"POST", "PATCH", "DELETE"} and self.headers.get("Origin") not in {
             None, "http://127.0.0.1:8765", "http://localhost:8765"
         }:
             self.send_json({"error": "Cross-site requests are not allowed."}, 403)
@@ -151,6 +194,23 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlsplit(self.path)
         if parsed.path == "/api/status":
             return self.send_json(library_status())
+        if parsed.path == "/api/conversations":
+            try:
+                return self.send_json({"conversations": [
+                    {key: item[key] for key in (
+                        "conversation_id", "title", "created_at", "updated_at", "scope"
+                    )}
+                    for item in CONVERSATIONS.list()
+                ]})
+            except ConversationError as exc:
+                return self.send_json({"error": str(exc)}, 422)
+        if parsed.path.startswith("/api/conversations/"):
+            try:
+                return self.send_json(CONVERSATIONS.get(parsed.path.removeprefix("/api/conversations/")))
+            except ConversationNotFound as exc:
+                return self.send_json({"error": str(exc)}, 404)
+            except ConversationError as exc:
+                return self.send_json({"error": str(exc)}, 422)
         if parsed.path == "/api/paper":
             relative = parse_qs(parsed.query).get("path", [""])[0]
             path = paper_path(relative)
@@ -174,6 +234,16 @@ class Handler(BaseHTTPRequestHandler):
         if not self.allowed_request():
             return
         parsed = urlsplit(self.path)
+        if parsed.path.startswith("/api/conversations/"):
+            conversation_id = parsed.path.removeprefix("/api/conversations/")
+            try:
+                with conversation_lock(conversation_id):
+                    CONVERSATIONS.delete(conversation_id)
+                return self.send_json({"deleted": conversation_id})
+            except ConversationNotFound as exc:
+                return self.send_json({"error": str(exc)}, 404)
+            except ConversationError as exc:
+                return self.send_json({"error": str(exc)}, 422)
         if parsed.path != "/api/paper":
             return self.send_json({"error": "Not found."}, 404)
         relative = parse_qs(parsed.query).get("path", [""])[0]
@@ -188,6 +258,31 @@ class Handler(BaseHTTPRequestHandler):
             "deleted": relative,
             "message": "PDF removed. Sync the library to remove it from the search index.",
         })
+
+    def do_PATCH(self):
+        if not self.allowed_request():
+            return
+        parsed = urlsplit(self.path)
+        if not parsed.path.startswith("/api/conversations/"):
+            return self.send_json({"error": "Not found."}, 404)
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            if length <= 0 or length > 16000:
+                raise ValueError("Invalid request length.")
+            payload = json.loads(self.rfile.read(length))
+            if not isinstance(payload, dict):
+                raise ValueError("Expected a JSON object.")
+            scope = parse_document_ids(payload.get("document_ids"))
+            conversation_id = parsed.path.removeprefix("/api/conversations/")
+            with conversation_lock(conversation_id):
+                conversation = CONVERSATIONS.update_scope(conversation_id, scope)
+            return self.send_json({"conversation_id": conversation_id, "scope": conversation["scope"]})
+        except ConversationNotFound as exc:
+            return self.send_json({"error": str(exc)}, 404)
+        except (ValueError, json.JSONDecodeError) as exc:
+            return self.send_json({"error": str(exc)}, 400)
+        except ConversationError as exc:
+            return self.send_json({"error": str(exc)}, 422)
 
     def do_POST(self):
         if not self.allowed_request():
@@ -219,12 +314,15 @@ class Handler(BaseHTTPRequestHandler):
                     target = PAPERS / f"{stem} ({number}).pdf"
                     number += 1
             return self.send_json({"filename": target.name}, 201)
-        if parsed.path not in {"/api/sync", "/api/ask"}:
+        if parsed.path not in {"/api/sync", "/api/ask", "/api/conversations"}:
             return self.send_json({"error": "Not found."}, 404)
         try:
             payload = json.loads(self.rfile.read(length))
             if not isinstance(payload, dict):
                 raise ValueError("Expected a JSON object.")
+            if parsed.path == "/api/conversations":
+                scope = parse_document_ids(payload.get("document_ids", []))
+                return self.send_json(CONVERSATIONS.create(scope), 201)
             if parsed.path == "/api/sync":
                 force = payload.get("force", False)
                 if not isinstance(force, bool):
@@ -237,6 +335,15 @@ class Handler(BaseHTTPRequestHandler):
             question = payload.get("question", "")
             if not isinstance(question, str) or not question.strip() or len(question) > 4000:
                 return self.send_json({"error": "Enter a question of up to 4,000 characters."}, 400)
+            conversation_id = payload.get("conversation_id")
+            if conversation_id is not None:
+                if not isinstance(conversation_id, str):
+                    raise ValueError("conversation_id must be a string.")
+                scope = (parse_document_ids(payload["document_ids"])
+                         if "document_ids" in payload else None)
+                return self.send_json(ask_conversation_question(
+                    conversation_id, question.strip(), scope
+                ))
             paper = payload.get("paper")
             if paper is not None and (not isinstance(paper, str) or not paper):
                 return self.send_json({"error": "Select a valid paper."}, 400)
@@ -248,12 +355,15 @@ class Handler(BaseHTTPRequestHandler):
             }, 409)
         except (json.JSONDecodeError, ValueError) as exc:
             return self.send_json({"error": str(exc)}, 400)
-        except (SyncError, IndexCompatibilityError, RuntimeError, ImportError) as exc:
+        except ConversationNotFound as exc:
+            return self.send_json({"error": str(exc)}, 404)
+        except (SyncError, IndexCompatibilityError, ConversationError, RuntimeError, ImportError) as exc:
             return self.send_json({"error": str(exc)}, 422)
 
 
 def main():
     os.chdir(ROOT)
+    logging.basicConfig(level=logging.INFO)
     server = ThreadingHTTPServer(("127.0.0.1", 8765), Handler)
     print("Scholar Frog is running at http://127.0.0.1:8765")
     try:
