@@ -5,7 +5,7 @@ from urllib.parse import quote
 import pytest
 
 import app
-from app import MISSING_PAPER_MESSAGES, upload_filename
+from app import MISSING_PAPER_MESSAGES, paper_path, upload_filename
 from src.citations import GenerationStatus
 
 
@@ -38,6 +38,15 @@ def test_library_status_lists_pdfs_including_subfolders(tmp_path, monkeypatch):
     assert app.library_status() == {
         "papers": ["Folder/A.PDF", "z.pdf"],
     }
+
+
+def test_paper_path_allows_library_pdf_and_rejects_traversal(tmp_path, monkeypatch):
+    (tmp_path / "one.pdf").write_bytes(b"%PDF-")
+    monkeypatch.setattr(app, "PAPERS", tmp_path)
+
+    assert paper_path("one.pdf") == tmp_path / "one.pdf"
+    assert paper_path("../one.pdf") is None
+    assert paper_path("missing.pdf") is None
 
 
 def test_ask_reports_no_papers_without_searching_a_removed_library(tmp_path, monkeypatch):

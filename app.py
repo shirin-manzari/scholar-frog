@@ -51,6 +51,17 @@ def library_status():
     return {"papers": papers}
 
 
+def paper_path(relative):
+    """Resolve a library-relative PDF path without allowing traversal."""
+    if not isinstance(relative, str) or not relative:
+        return None
+    path = (PAPERS / relative).resolve()
+    if (not path.is_relative_to(PAPERS.resolve()) or path.suffix.lower() != ".pdf"
+            or not path.is_file()):
+        return None
+    return path
+
+
 def _available_chunks(chunks, paper_paths):
     available = []
     for chunk in chunks:
@@ -108,7 +119,7 @@ class Handler(BaseHTTPRequestHandler):
         if self.headers.get("Host") not in {"127.0.0.1:8765", "localhost:8765"}:
             self.send_json({"error": "Use the local Scholar Frog address."}, 403)
             return False
-        if self.command == "POST" and self.headers.get("Origin") not in {
+        if self.command in {"POST", "DELETE"} and self.headers.get("Origin") not in {
             None, "http://127.0.0.1:8765", "http://localhost:8765"
         }:
             self.send_json({"error": "Cross-site requests are not allowed."}, 403)
@@ -142,8 +153,8 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json(library_status())
         if parsed.path == "/api/paper":
             relative = parse_qs(parsed.query).get("path", [""])[0]
-            path = (PAPERS / relative).resolve()
-            if not relative or not path.is_relative_to(PAPERS.resolve()) or path.suffix.lower() != ".pdf" or not path.is_file():
+            path = paper_path(relative)
+            if path is None:
                 return self.send_json({"error": "Paper not found."}, 404)
             return self.send_file(path, "application/pdf")
         static = {
@@ -158,6 +169,25 @@ class Handler(BaseHTTPRequestHandler):
             path, content_type = static[parsed.path]
             return self.send_file(path, content_type)
         self.send_json({"error": "Not found."}, 404)
+
+    def do_DELETE(self):
+        if not self.allowed_request():
+            return
+        parsed = urlsplit(self.path)
+        if parsed.path != "/api/paper":
+            return self.send_json({"error": "Not found."}, 404)
+        relative = parse_qs(parsed.query).get("path", [""])[0]
+        path = paper_path(relative)
+        if path is None:
+            return self.send_json({"error": "Paper not found."}, 404)
+        try:
+            path.unlink()
+        except OSError as exc:
+            return self.send_json({"error": f"Could not remove the PDF: {exc}"}, 422)
+        return self.send_json({
+            "deleted": relative,
+            "message": "PDF removed. Sync the library to remove it from the search index.",
+        })
 
     def do_POST(self):
         if not self.allowed_request():

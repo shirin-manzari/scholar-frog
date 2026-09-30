@@ -255,6 +255,14 @@ async function refreshStatus() {
         name.textContent = path;
         link.append(name);
         item.append(link);
+        const remove = document.createElement("button");
+        remove.className = "delete-paper";
+        remove.type = "button";
+        remove.textContent = "×";
+        remove.title = `Delete ${path}`;
+        remove.setAttribute("aria-label", `Delete ${path}`);
+        remove.addEventListener("click", () => deletePaper(path));
+        item.append(remove);
         list.append(item);
       }
     }
@@ -262,6 +270,22 @@ async function refreshStatus() {
   } catch (error) {
     showPaperListMessage(error.message);
     showWelcomeConversation();
+  }
+}
+
+async function deletePaper(path) {
+  if (!window.confirm(`Delete ${path} from the paper library? This cannot be undone.`)) {
+    return;
+  }
+  showLibraryMessage(`Removing ${path}…`);
+  try {
+    const result = await request(`/api/paper?path=${encodeURIComponent(path)}`, {
+      method: "DELETE",
+    });
+    showLibraryMessage(result.message);
+    await refreshStatus();
+  } catch (error) {
+    showLibraryMessage(error.message, true);
   }
 }
 
