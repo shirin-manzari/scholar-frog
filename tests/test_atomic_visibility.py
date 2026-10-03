@@ -10,6 +10,16 @@ import src.sync as sync
 from src.index_config import IndexCompatibilityError, read_metadata
 
 
+_TOKEN_PREPARE = sync._prepare
+_EXPAND_CONTEXT = retrieve.expand_context
+
+
+@pytest.fixture(autouse=True)
+def anchor_visibility_only(monkeypatch):
+    # Original visibility tests assert physical anchor IDs, before expansion.
+    monkeypatch.setattr(retrieve, "expand_context", lambda question, anchors, corpus, snapshot: anchors)
+
+
 class AtomicCollection:
     def __init__(self):
         self.rows = {}
@@ -365,3 +375,36 @@ def test_real_chroma_partial_insert_is_invisible_then_recovered(tmp_path, monkey
     assert len(hits) == 3
     assert all(hit["source"] == "paper.pdf" for hit in hits)
     assert all(hit["page"] in {1, 2, 3} for hit in hits)
+
+
+@pytest.mark.parametrize("initial", [True, False])
+def test_stored_context_survives_interrupted_write_and_version_recovery(harness, monkeypatch, initial):
+    from passage_helpers import CharacterTokenizer
+    monkeypatch.setattr(retrieve, "expand_context", _EXPAND_CONTEXT)
+    papers, db, collection = harness
+    config = replace(ingest.get_index_config(), chunk_size=40, chunk_overlap=10)
+    monkeypatch.setattr(ingest, "get_index_config", lambda: config)
+    monkeypatch.setattr(ingest, "tokenizer_limits", lambda: (CharacterTokenizer(), 510))
+    monkeypatch.setattr(ingest, "get_embedding_model", lambda: EmbeddingModel())
+    monkeypatch.setattr(ingest, "extract_pages", lambda path: [(1, path.read_text()), (2, "Continuation.")])
+    monkeypatch.setattr(sync, "_prepare", _TOKEN_PREPARE)
+    old_text = "# Methods\n\nOld anchor.\n\nOld neighbor."
+    path = _add_pdf(papers, "paper.pdf", old_text)
+    if not initial:
+        assert not sync.sync_library(str(papers)).failures
+    new_text = "# Methods\n\nNew anchor.\n\nNew neighbor."
+    path.write_text(new_text)
+    collection.fail_after = 1
+    assert sync.sync_library(str(papers)).failures
+    visible = _visible(harness, top_k=10)
+    if initial:
+        assert visible == []
+    else:
+        assert any("Old anchor." in hit["text"] for hit in visible)
+        assert all("New" not in hit["text"] for hit in visible)
+    assert not sync.sync_library(str(papers)).failures
+    visible = _visible(harness, top_k=10)
+    assert any("New anchor." in hit["text"] for hit in visible)
+    assert all("Old" not in hit["text"] for hit in visible)
+    assert len({hit["metadata"]["document_version"] for hit in visible}) == 1
+    assert all(hit["page"] in {1, 2} for hit in visible)

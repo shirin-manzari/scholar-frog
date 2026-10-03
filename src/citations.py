@@ -108,7 +108,7 @@ def extract_cited_claims(answer: str) -> list[CitedClaim]:
 
 
 def assign_evidence(chunks: list[dict]) -> list[Evidence]:
-    """Deduplicate by persistent chunk ID (when present), preserving rank."""
+    """Deduplicate evidence IDs (search or expanded passage IDs), preserving rank."""
     result = []
     seen = set()
     for chunk in chunks:

@@ -255,8 +255,8 @@ def index_main(argv=None):
     parser.add_argument("--embedding-model")
     parser.add_argument("--embedding-revision")
     parser.add_argument("--embedding-dimension", type=int)
-    parser.add_argument("--chunk-size", type=int)
-    parser.add_argument("--chunk-overlap", type=int)
+    parser.add_argument("--chunk-size", type=int, help="Search passage target in embedding-tokenizer tokens")
+    parser.add_argument("--chunk-overlap", type=int, help="Approximate sentence overlap in embedding-tokenizer tokens")
     parser.add_argument("--normalize-embeddings", action=argparse.BooleanOptionalAction, default=None)
     args = parser.parse_args(argv)
     try:

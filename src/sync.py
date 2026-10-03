@@ -490,22 +490,26 @@ def _prepare(item: dict, digest: str, paths: list[str]) -> dict:
         return {"ids": [], "documents": [], "metadatas": [], "embeddings": []}
     title = ingest.guess_title(item["absolute"], pages[0][1])
     ids, documents, metadatas = [], [], []
+    tokenizer, max_tokens = ingest.tokenizer_limits()
+    section, section_id = "Untitled section", 0
     for page, text in pages:
-        for index, (section, chunk, character_start, character_end) in enumerate(
-            ingest.chunk_sections_with_locations(text)
-        ):
+        paragraphs, section, section_id = ingest.page_paragraphs(text, section, section_id)
+        context = json.dumps({"text": text, "paragraphs": paragraphs}, ensure_ascii=False)
+        for index, passage in enumerate(ingest.passage_spans(
+            text, paragraphs, tokenizer=tokenizer, max_tokens=max_tokens
+        )):
             ids.append(f"{digest}-{page}-{index}")
-            documents.append(chunk)
-            metadata = {
+            documents.append(text[passage["start"]:passage["end"]])
+            metadatas.append({
                 "source": paths[0], "source_paths": json.dumps(paths),
-                "title": title, "section": section, "page": int(page),
-                "chunk_index": index,
+                "title": title, "section": passage["section"], "page": int(page),
+                "chunk_index": index, "section_id": passage["section_id"],
+                "paragraph_start": passage["paragraph_start"],
+                "paragraph_end": passage["paragraph_end"],
+                "character_start": passage["start"], "character_end": passage["end"],
+                "page_context": context, "context_version": ingest.get_index_config().context_version,
                 "file_hash": digest, "document_id": digest,
-            }
-            if character_start is not None:
-                metadata["character_start"] = character_start
-                metadata["character_end"] = character_end
-            metadatas.append(metadata)
+            })
     vectors = []
     if documents:
         config = ingest.get_index_config()
@@ -674,6 +678,10 @@ def _sync_library_locked(papers_dir: str = "papers", *, dry_run: bool = False,
         else:
             version_id = uuid.uuid4().hex[:16]
             document["ids"] = [f"{chunk_id}-{version_id}" for chunk_id in document["ids"]]
+
+    for document in prepared.values():
+        for chunk_id, metadata in zip(document["ids"], document["metadatas"]):
+            metadata["document_version"] = chunk_id.rsplit("-", 1)[-1]
 
     # Record intended IDs before touching Chroma. A crash during upsert leaves
     # a durable marker so the next run can retry without exposing these IDs.

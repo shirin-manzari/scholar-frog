@@ -1,3 +1,13 @@
+import pytest
+import src.ingest as ingest
+from passage_helpers import CharacterTokenizer
+
+
+@pytest.fixture(autouse=True)
+def local_tokenizer(monkeypatch):
+    monkeypatch.setattr(ingest, "tokenizer_limits", lambda: (CharacterTokenizer(), 510))
+
+
 from pathlib import Path
 
 from src.ingest import (
@@ -13,7 +23,7 @@ def test_chunk_text_keeps_short_paragraphs_together():
     text = "First paragraph.\n\nSecond paragraph."
 
     assert chunk_text(text, size=100, overlap=10) == [
-        "First paragraph.\nSecond paragraph."
+        "First paragraph.\n\nSecond paragraph."
     ]
 
 
@@ -57,10 +67,10 @@ def test_chunk_locations_point_to_the_matching_extracted_page_text():
     chunks = chunk_sections_with_locations(text, size=100, overlap=10)
 
     assert [(section, chunk) for section, chunk, _, _ in chunks] == [
-        ("Methods", "# Methods\nFirst paragraph.\nSecond paragraph.")
+        ("Methods", "# Methods\n\nFirst paragraph.\n\nSecond paragraph.")
     ]
     _, chunk, start, end = chunks[0]
-    assert text[start:end].replace("\n\n", "\n") == chunk
+    assert text[start:end] == chunk
 
 
 def test_chunk_locations_cover_overlapping_hard_splits():

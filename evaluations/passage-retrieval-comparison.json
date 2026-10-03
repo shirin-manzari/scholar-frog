@@ -1,0 +1,389 @@
+{
+  "old": {
+    "dataset": "scholar-frog-golden-v1",
+    "dataset_version": 1,
+    "top_k": 5,
+    "retrieval_mode": "hybrid-rerank",
+    "generation_included": false,
+    "metrics": {
+      "retrieval_cases": 4,
+      "retrieval_recall_at_5": 1.0,
+      "mean_retrieval_latency_ms": 2964.71,
+      "per_paper_coverage": {
+        "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf": {
+          "expected_cases": 2,
+          "retrieval_hits": 2,
+          "recall": 1.0
+        },
+        "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf": {
+          "expected_cases": 2,
+          "retrieval_hits": 2,
+          "recall": 1.0
+        }
+      }
+    },
+    "cases": [
+      {
+        "id": "bias-data-selection-definition",
+        "question": "How does the bias survey define data selection bias?",
+        "expected": "answered",
+        "expected_evidence": [
+          {
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 3
+          }
+        ],
+        "retrieved": [
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-1-1-c30bc6eceaf84a1e",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 1
+          },
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-3-2-c30bc6eceaf84a1e",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 3
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-16-0-ed9e7f73ae78470b",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 16
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-18-0-ed9e7f73ae78470b",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 18
+          }
+        ],
+        "retrieval_hit": true,
+        "retrieval_latency_ms": 2424.1,
+        "anchor_retrieval_hit": true
+      },
+      {
+        "id": "bias-wikipedia-editor-demographics",
+        "question": "What proportion of Wikipedia editors does the bias survey report are male?",
+        "expected": "answered",
+        "expected_evidence": [
+          {
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 6
+          }
+        ],
+        "retrieved": [
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-6-0-c30bc6eceaf84a1e",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 6
+          },
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-7-0-c30bc6eceaf84a1e",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 7
+          }
+        ],
+        "retrieval_hit": true,
+        "retrieval_latency_ms": 2620.46,
+        "anchor_retrieval_hit": true
+      },
+      {
+        "id": "rag-trc-bench",
+        "question": "What does the Trustworthiness in RAG survey say TRC Bench covers and how many LLMs it evaluates?",
+        "expected": "answered",
+        "expected_evidence": [
+          {
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 4
+          }
+        ],
+        "retrieved": [
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-4-0-ed9e7f73ae78470b",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 4
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-33-8-ed9e7f73ae78470b",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 33
+          }
+        ],
+        "retrieval_hit": true,
+        "retrieval_latency_ms": 3827.13,
+        "anchor_retrieval_hit": true
+      },
+      {
+        "id": "rag-system-stages",
+        "question": "What main stages does the Trustworthiness in RAG survey describe for a complete RAG system?",
+        "expected": "answered",
+        "expected_evidence": [
+          {
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 6
+          }
+        ],
+        "retrieved": [
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-6-1-ed9e7f73ae78470b",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 6
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-23-0-ed9e7f73ae78470b",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 23
+          }
+        ],
+        "retrieval_hit": true,
+        "retrieval_latency_ms": 3616.54,
+        "anchor_retrieval_hit": true
+      },
+      {
+        "id": "out-of-corpus-medieval-astronomy",
+        "question": "What evidence do these papers provide about medieval astronomy?",
+        "expected": "abstained",
+        "expected_evidence": [],
+        "retrieved": [],
+        "retrieval_hit": false,
+        "retrieval_latency_ms": 2335.31,
+        "anchor_retrieval_hit": false
+      }
+    ],
+    "context_tokens": [
+      726,
+      387,
+      281,
+      301,
+      0
+    ],
+    "anchor_counts": [
+      4,
+      2,
+      2,
+      2,
+      0
+    ],
+    "anchor_recall_at_5": 1.0,
+    "maximum_search_tokens_including_special": 484,
+    "stored_page_context_bytes": 0,
+    "index_chunks": 556,
+    "index_seconds": 20.17,
+    "cold_mean_retrieval_latency_ms": 3250.11,
+    "index_timing_note": "Old ingestion included cold embedding-model initialization; new ingestion reused the model. Indexing times are not directly comparable."
+  },
+  "new": {
+    "dataset": "scholar-frog-golden-v1",
+    "dataset_version": 1,
+    "top_k": 5,
+    "retrieval_mode": "hybrid-rerank",
+    "generation_included": false,
+    "metrics": {
+      "retrieval_cases": 4,
+      "retrieval_recall_at_5": 1.0,
+      "mean_retrieval_latency_ms": 3476.34,
+      "per_paper_coverage": {
+        "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf": {
+          "expected_cases": 2,
+          "retrieval_hits": 2,
+          "recall": 1.0
+        },
+        "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf": {
+          "expected_cases": 2,
+          "retrieval_hits": 2,
+          "recall": 1.0
+        }
+      }
+    },
+    "cases": [
+      {
+        "id": "bias-data-selection-definition",
+        "question": "How does the bias survey define data selection bias?",
+        "expected": "answered",
+        "expected_evidence": [
+          {
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 3
+          }
+        ],
+        "retrieved": [
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-8d09c7c86dc54d9a-p1-0:987",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 1
+          },
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-8d09c7c86dc54d9a-p3-166:2209",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 3
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p15-3041:3207",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 15
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p16-0:2238",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 16
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p34-3267:4958",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 34
+          }
+        ],
+        "retrieval_hit": true,
+        "retrieval_latency_ms": 3485.26,
+        "anchor_retrieval_hit": true
+      },
+      {
+        "id": "bias-wikipedia-editor-demographics",
+        "question": "What proportion of Wikipedia editors does the bias survey report are male?",
+        "expected": "answered",
+        "expected_evidence": [
+          {
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 6
+          }
+        ],
+        "retrieved": [
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-8d09c7c86dc54d9a-p5-3560:4133",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 5
+          },
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-8d09c7c86dc54d9a-p6-0:683",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 6
+          },
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-8d09c7c86dc54d9a-p6-4112:4162",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 6
+          },
+          {
+            "id": "92026c13900a0c5138a7a35fcedcdcb7e4f8e9fd1b3f2aa7a6d204ff52e2af0c-8d09c7c86dc54d9a-p7-0:929",
+            "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+            "page": 7
+          }
+        ],
+        "retrieval_hit": true,
+        "retrieval_latency_ms": 3377.24,
+        "anchor_retrieval_hit": true
+      },
+      {
+        "id": "rag-trc-bench",
+        "question": "What does the Trustworthiness in RAG survey say TRC Bench covers and how many LLMs it evaluates?",
+        "expected": "answered",
+        "expected_evidence": [
+          {
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 4
+          }
+        ],
+        "retrieved": [
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p3-3771:4102",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 3
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p4-0:1005",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 4
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p27-2501:3383",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 27
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p28-0:400",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 28
+          }
+        ],
+        "retrieval_hit": true,
+        "retrieval_latency_ms": 3553.63,
+        "anchor_retrieval_hit": true
+      },
+      {
+        "id": "rag-system-stages",
+        "question": "What main stages does the Trustworthiness in RAG survey describe for a complete RAG system?",
+        "expected": "answered",
+        "expected_evidence": [
+          {
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 6
+          }
+        ],
+        "retrieved": [
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p6-304:1664",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 6
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p22-3349:4006",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 22
+          },
+          {
+            "id": "5eb72e370dc791b4d52953c427784e38757f60260d26dab59ea83ce2d44d5c01-c10062a814ff4d21-p23-0:1093",
+            "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+            "page": 23
+          }
+        ],
+        "retrieval_hit": true,
+        "retrieval_latency_ms": 3394.27,
+        "anchor_retrieval_hit": true
+      },
+      {
+        "id": "out-of-corpus-medieval-astronomy",
+        "question": "What evidence do these papers provide about medieval astronomy?",
+        "expected": "abstained",
+        "expected_evidence": [],
+        "retrieved": [],
+        "retrieval_hit": false,
+        "retrieval_latency_ms": 3571.28,
+        "anchor_retrieval_hit": false
+      }
+    ],
+    "context_tokens": [
+      1885,
+      644,
+      744,
+      1035,
+      0
+    ],
+    "anchor_counts": [
+      4,
+      2,
+      2,
+      2,
+      0
+    ],
+    "anchor_recall_at_5": 1.0,
+    "maximum_search_tokens_including_special": 302,
+    "stored_page_context_bytes": 1801624,
+    "index_chunks": 331,
+    "index_seconds": 9.99,
+    "cold_mean_retrieval_latency_ms": 3714.15,
+    "index_timing_note": "Old ingestion included cold embedding-model initialization; new ingestion reused the model. Indexing times are not directly comparable."
+  },
+  "method": {
+    "date": "2026-10-04",
+    "isolated_indexes": true,
+    "shared_extraction": true,
+    "warmup_passes": 1,
+    "measured_passes": 1,
+    "generation": "not run: local Ollama unavailable",
+    "dense_candidates": 50,
+    "bm25_candidates": 50,
+    "rerank_candidates": 40,
+    "reranker_min_score": 0.01,
+    "mmr_lambda": 0.75,
+    "max_chunks_per_paper": 2,
+    "token_counter": "BAAI/bge-small-en-v1.5 embedding tokenizer"
+  }
+}

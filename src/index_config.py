@@ -9,8 +9,9 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-INDEX_SCHEMA_VERSION = 1
-CHUNKING_VERSION = "markdown-heading-paragraph-v1"
+INDEX_SCHEMA_VERSION = 2
+CHUNKING_VERSION = "sentence-token-v2"
+CONTEXT_VERSION = "page-paragraph-v1"
 TEXT_EXTRACTION_VERSION = "pymupdf4llm-clean-margins-v2"
 CONFIG_FILE = "scholar-frog.toml"
 LEGACY_CONFIG_FILE = "scholarq.toml"
@@ -22,9 +23,10 @@ class IndexConfig:
     embedding_revision: str | None = None
     embedding_dimension: int = 384
     normalize_embeddings: bool = True
-    chunk_size: int = 800
-    chunk_overlap: int = 150
-    chunking_strategy: str = "markdown-heading-paragraph"
+    chunk_size: int = 300
+    chunk_overlap: int = 50
+    chunking_strategy: str = "sentence-token"
+    context_version: str = CONTEXT_VERSION
     chunking_version: str = CHUNKING_VERSION
     text_extraction_version: str = TEXT_EXTRACTION_VERSION
 
@@ -39,11 +41,11 @@ class IndexConfig:
             raise ValueError("chunk_size must be positive")
         if not 0 <= self.chunk_overlap < self.chunk_size:
             raise ValueError("chunk_overlap must be between zero and chunk_size - 1")
-        for name in ("chunking_strategy", "chunking_version", "text_extraction_version"):
+        for name in ("chunking_strategy", "chunking_version", "text_extraction_version", "context_version"):
             if not getattr(self, name).strip():
                 raise ValueError(f"{name} must not be empty")
-        if self.chunking_strategy != "markdown-heading-paragraph":
-            raise ValueError("chunking_strategy must be 'markdown-heading-paragraph'")
+        if self.chunking_strategy != "sentence-token":
+            raise ValueError("chunking_strategy must be 'sentence-token'")
 
     def canonical(self) -> dict:
         return asdict(self)
@@ -161,7 +163,7 @@ def check_compatibility(active: IndexConfig, metadata: dict | None, *, collectio
             raise IndexCompatibilityError("legacy or unversioned", "The existing Chroma collection has no version metadata (legacy or unversioned). Run `python ask.py index rebuild` to create a versioned index.")
         return "missing"
     if metadata.get("schema_version") != INDEX_SCHEMA_VERSION:
-        raise IndexCompatibilityError("unsupported schema version", f"Index schema {metadata.get('schema_version')!r} is unsupported (supported: {INDEX_SCHEMA_VERSION}).")
+        raise IndexCompatibilityError("unsupported schema version", f"Index schema {metadata.get('schema_version')!r} is unsupported (supported: {INDEX_SCHEMA_VERSION}). Token passages and stored paragraph context require an explicit rebuild: `python ask.py index rebuild`.")
     if metadata.get("status") != "ready" or not isinstance(metadata.get("configuration"), dict):
         raise IndexCompatibilityError("incomplete or corrupted", "Index metadata is incomplete or the index is not marked ready.")
     if metadata.get("configuration_fingerprint") != active.fingerprint:

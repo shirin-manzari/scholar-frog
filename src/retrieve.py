@@ -554,7 +554,7 @@ def _chunk_position(result: dict) -> tuple[int, int] | None:
 def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
                     min_score: float, max_per_paper: int, diversity: float,
                     adjacent_chunks: int) -> list[dict]:
-    """Threshold, diversify, cap, and expand reranked evidence."""
+    """Threshold, diversify, and cap search anchors before context expansion."""
     relevant = [
         candidate for candidate in reranked
         if float(candidate["reranker_score"]) >= min_score
@@ -565,63 +565,145 @@ def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
     anchors = _mmr_select(relevant, top_k, diversity, max_per_paper)
     if not anchors:
         return []
-    if adjacent_chunks == 0:
-        return [{**anchor, "selection_reason": "anchor", "adjacent_to": None}
-                for anchor in anchors]
+    # Neighboring context is added after ALL anchors have been selected.
+    return [{**anchor, "selection_reason": "anchor", "adjacent_to": None}
+            for anchor in anchors]
 
-    by_paper = {}
-    for record in corpus:
-        position = _chunk_position(record)
-        if position is not None:
-            by_paper.setdefault(_paper_key(record), []).append((position, record))
-    for records in by_paper.values():
-        records.sort(key=lambda item: (item[0], item[1]["id"]))
 
-    ranked_by_id = {candidate["id"]: candidate for candidate in reranked}
-    selected = []
-    selected_ids = set()
-    per_paper = {}
+def expand_context(question: str, anchors: list[dict], corpus: list[dict], snapshot,
+                   *, tokenizer=None, radius: int | None = None,
+                   budget: int | None = None, window: int | None = None,
+                   answer_reserve: int | None = None) -> list[dict]:
+    """Expand committed anchors, page by page, without changing ranking scores.
 
-    def add(result: dict, reason: str, adjacent_to: str | None = None) -> bool:
-        key = _paper_key(result)
-        if (result["id"] in selected_ids or len(selected) >= top_k
-                or per_paper.get(key, 0) >= max_per_paper):
-            return False
-        selected.append({
-            **result,
-            "selection_reason": reason,
-            "adjacent_to": adjacent_to,
-        })
-        selected_ids.add(result["id"])
-        per_paper[key] = per_paper.get(key, 0) + 1
-        return True
+    Budget counts formatted evidence and the complete initial generation prompt
+    with the embedding tokenizer (a local estimate, not the backend tokenizer).
+    Mandatory anchor intervals are reserved before optional paragraph expansion.
+    """
+    if not anchors:
+        return []
+    from src.ingest import token_count, tokenizer_limits
+    from src.generate import build_context, build_user_prompt, SYSTEM_PROMPT
 
-    group_size = 1 + (2 * adjacent_chunks)
-    initial_anchor_count = min(len(anchors), max(1, math.ceil(top_k / group_size)))
-    active_anchors = [anchor for anchor in anchors[:initial_anchor_count]
-                      if add(anchor, "anchor")]
-    for anchor in active_anchors:
-        ordered = by_paper.get(_paper_key(anchor), [])
-        anchor_index = next(
-            (i for i, (_, record) in enumerate(ordered) if record["id"] == anchor["id"]),
-            None,
-        )
-        if anchor_index is None:
+    tokenizer = tokenizer if tokenizer is not None else tokenizer_limits()[0]
+    radius = _non_negative_int("CONTEXT_PARAGRAPHS", 1) if radius is None else radius
+    budget = _positive_int("CONTEXT_BUDGET_TOKENS", 4000) if budget is None else budget
+    window = _positive_int("CONTEXT_WINDOW_TOKENS", 8192) if window is None else window
+    answer_reserve = _positive_int("CONTEXT_ANSWER_RESERVE", 1024) if answer_reserve is None else answer_reserve
+    if radius < 0 or min(budget, window, answer_reserve) <= 0:
+        raise ValueError("Context budgets must be positive and paragraph radius non-negative")
+
+    def version_key(item):
+        meta = item["metadata"]
+        return (meta["document_id"], meta["document_version"])
+
+    committed = {item["id"]: item for item in corpus if item["id"] in snapshot.chunk_ids}
+    pages = {}
+    for item in committed.values():
+        meta = item["metadata"]
+        if "page_context" not in meta or not meta.get("document_version"):
             continue
-        for distance in range(1, adjacent_chunks + 1):
-            # Later chunks are preferred because overlap already carries the
-            # preceding chunk's tail into the anchor in the current chunker.
-            for neighbor_index in (anchor_index + distance, anchor_index - distance):
-                if 0 <= neighbor_index < len(ordered):
-                    neighbor = ordered[neighbor_index][1]
-                    neighbor = ranked_by_id.get(neighbor["id"], neighbor)
-                    add(neighbor, "adjacent", anchor["id"])
+        owner = snapshot.owners[item["id"]]
+        if meta.get("document_id") != owner["document_id"]:
+            continue
+        key = (*version_key(item), int(item["page"]))
+        context = json.loads(meta["page_context"])
+        if key in pages and pages[key] != context:
+            raise ValueError("Committed page context is inconsistent; rebuild the index")
+        pages[key] = context
+    intervals = []
+    for rank, anchor in enumerate(anchors):
+        meta = anchor["metadata"]
+        if anchor["id"] not in committed:
+            raise ValueError("Cannot expand an uncommitted search hit")
+        if not meta.get("document_version") or "page_context" not in meta:
+            raise ValueError("Search hit has no versioned paragraph context; rebuild the index")
+        key = (*version_key(anchor), int(anchor["page"]))
+        if key not in pages:
+            raise ValueError("Search hit has no committed paragraph context; rebuild the index")
+        start, end = meta["character_start"], meta["character_end"]
+        if pages[key]["text"][start:end] != anchor["text"]:
+            raise ValueError("Search hit and stored context disagree; rebuild the index")
+        intervals.append((key, start, end, rank))
 
-    # If boundaries or paper caps left reserved neighbor slots unused, fill
-    # them with the remaining diverse, threshold-passing anchors.
-    for anchor in anchors[initial_anchor_count:]:
-        add(anchor, "anchor")
-    return selected
+    def render(spans):
+        groups = []
+
+        def section_at(key, offset):
+            return next((para["section_id"] for para in pages[key]["paragraphs"]
+                         if para["start"] <= offset < para["end"]), None)
+
+        for key in dict.fromkeys(span[0] for span in spans):
+            ordered = sorted((span for span in spans if span[0] == key), key=lambda x: (x[1], x[2]))
+            for _, start, end, rank in ordered:
+                if (groups and groups[-1][0] == key
+                        and (start <= groups[-1][2]
+                             or (not pages[key]["text"][groups[-1][2]:start].strip()
+                                 and section_at(key, start) == section_at(key, groups[-1][2] - 1)))):
+                    old_key, old_start, old_end, ranks = groups[-1]
+                    groups[-1] = (key, old_start, max(end, old_end), ranks | {rank})
+                else:
+                    groups.append((key, start, end, {rank}))
+        groups.sort(key=lambda x: (min(x[3]), x[0][2], x[1]))
+        result = []
+        for key, start, end, ranks in groups:
+            anchor = anchors[min(ranks)]
+            text = pages[key]["text"][start:end]
+            meta = {**anchor["metadata"], "page": key[2],
+                    "character_start": start, "character_end": end}
+            # Offsets and paragraph locations always describe the expanded text.
+            covered = [i for i, para in enumerate(pages[key]["paragraphs"])
+                       if para["start"] < end and para["end"] > start]
+            if covered:
+                meta.update(paragraph_start=min(covered), paragraph_end=max(covered),
+                            section=pages[key]["paragraphs"][covered[0]]["section"],
+                            section_id=pages[key]["paragraphs"][covered[0]]["section_id"])
+            meta.pop("page_context", None)
+            meta.pop("chunk_index", None)
+            evidence = {**anchor, "id": f"{key[0]}-{key[1]}-p{key[2]}-{start}:{end}",
+                        "text": text, "page": key[2], "section": meta["section"],
+                        "metadata": meta, "anchor_id": anchor["id"],
+                        "anchor_hits": [{"id": anchors[r]["id"], "page": anchors[r]["page"],
+                                         "text": anchors[r]["text"],
+                                         "character_start": anchors[r]["metadata"]["character_start"],
+                                         "character_end": anchors[r]["metadata"]["character_end"],
+                                         "scores": {k: v for k, v in anchors[r].items()
+                                                    if k.endswith(("score", "distance"))}}
+                                        for r in sorted(ranks)]}
+            meta["anchor_hits"] = evidence["anchor_hits"]
+            result.append(evidence)
+        return result
+
+    def fits(spans):
+        result = render(spans)
+        return (token_count(build_context(result), tokenizer) <= budget
+                and token_count(SYSTEM_PROMPT + "\n" + build_user_prompt(question, result), tokenizer,
+                                special=True) + answer_reserve <= window)
+
+    if not fits(intervals):
+        raise ValueError("Selected evidence exceeds the context budget. Increase CONTEXT_BUDGET_TOKENS/"
+                         "CONTEXT_WINDOW_TOKENS, shorten the question, or reduce top_k; no evidence was truncated.")
+    # Expand the anchor's own paragraphs before neighbors, fairly across anchors.
+    choices = []
+    for rank, anchor in enumerate(anchors):
+        meta = anchor["metadata"]
+        version = version_key(anchor)
+        ordered = [(key, pid, para) for key, context in sorted(pages.items())
+                   if key[:2] == version for pid, para in enumerate(context["paragraphs"])]
+        positions = [i for i, (key, pid, para) in enumerate(ordered)
+                     if key[2] == anchor["page"]
+                     and meta["paragraph_start"] <= pid <= meta["paragraph_end"]]
+        if not positions:
+            continue
+        for i, (key, pid, para) in enumerate(ordered):
+            distance = min(abs(i - pos) for pos in positions)
+            if distance <= radius and para["section_id"] == meta["section_id"]:
+                choices.append((distance, rank, key, para["start"], para["end"]))
+    for distance, rank, key, start, end in sorted(choices):
+        candidate = intervals + [(key, start, end, rank)]
+        if fits(candidate):
+            intervals = candidate
+    return render(intervals)
 
 
 _THIS_PAPER = re.compile(r"\bthis\s+(?:paper|article|study|survey)\b", re.IGNORECASE)
@@ -721,6 +803,8 @@ def _retrieve_locked(question: str, top_k: int | None = None,
                         selected_ids.add(item["id"])
                         paper_counts[key] = paper_counts.get(key, 0) + 1
                     results = focused
+
+    results = expand_context(question, results, correction_corpus, snapshot)
 
     if paper is not None:
         return [

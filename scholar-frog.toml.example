@@ -4,6 +4,8 @@ embedding_model = "BAAI/bge-small-en-v1.5"
 # embedding_revision = "<commit-hash>"
 embedding_dimension = 384
 normalize_embeddings = true
-chunk_size = 800
-chunk_overlap = 150
-chunking_strategy = "markdown-heading-paragraph"
+
+# Local embedding-tokenizer tokens, excluding special tokens.
+chunk_size = 300
+chunk_overlap = 50
+chunking_strategy = "sentence-token"

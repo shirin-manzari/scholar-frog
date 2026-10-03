@@ -264,130 +264,160 @@ def extract_pages(pdf_path: Path) -> list[tuple[int, str]]:
             return pages
 
 
-def chunk_sections(text: str, size: int | None = None,
-                   overlap: int | None = None) -> list[tuple[str, str]]:
-    """Chunk Markdown by heading sections, returning (section, chunk) pairs."""
+def token_count(text: str, tokenizer, *, special: bool = False) -> int:
+    """Count locally, without tokenizer truncation."""
+    return len(tokenizer.encode(text, add_special_tokens=special, truncation=False))
+
+
+def tokenizer_limits(model=None):
+    model = model or get_embedding_model()
+    tokenizer = model.tokenizer
+    maximum = min(model.max_seq_length, tokenizer.model_max_length)
+    special = tokenizer.num_special_tokens_to_add(pair=False)
+    if maximum <= special:
+        raise ValueError("Embedding model has no usable token capacity")
+    return tokenizer, int(maximum - special)
+
+
+def page_paragraphs(text: str, section: str = "Untitled section",
+                    section_id: int = 0) -> tuple[list[dict], str, int]:
+    """Exact page offsets; heading occurrences distinguish repeated section names.
+
+    Carry the final section into the next page during ingestion.
+    """
+    records = []
+    # Headings start a paragraph even without a preceding blank line.
+    boundary = re.compile(r"\n\s*\n|(?=^#{1,6}\s)", re.MULTILINE)
+    start = 0
+    spans = []
+    for match in boundary.finditer(text):
+        if match.start() > start:
+            spans.append((start, match.start()))
+        start = match.end()
+    if start < len(text):
+        spans.append((start, len(text)))
+    for left, right in spans:
+        raw = text[left:right]
+        left += len(raw) - len(raw.lstrip())
+        right = left + len(raw.strip())
+        if left == right:
+            continue
+        heading = re.match(r"^#{1,6}\s+(.+?)\s*#*\s*(?:\n|$)", text[left:right])
+        if heading:
+            section = heading.group(1).strip()
+            section_id += 1
+        records.append({"start": left, "end": right, "section": section,
+                        "section_id": section_id})
+    return records, section, section_id
+
+
+def _prefix_end(text: str, start: int, end: int, limit: int, tokenizer) -> int:
+    # Binary search a character boundary, then validate the actual token count.
+    low, high = start + 1, end
+    best = start
+    while low <= high:
+        mid = (low + high) // 2
+        if token_count(text[start:mid], tokenizer) <= limit:
+            best, low = mid, mid + 1
+        else:
+            high = mid - 1
+    if best == start:
+        raise ValueError("Token budget cannot hold a single character")
+    return best
+
+
+def sentence_spans(text: str, left: int, right: int) -> list[tuple[int, int]]:
+    """Conservative sentence boundaries, retaining common academic abbreviations."""
+    starts = [left]
+    for match in re.finditer(r'(?<=[.!?])\s+(?=[A-Z0-9"“])', text[left:right]):
+        prefix = text[left:left + match.start()]
+        if re.search(r"\b(?:Mr|Mrs|Ms|Dr|Prof|Fig|Eq|et al|e\.g|i\.e|[A-Z])\.$", prefix):
+            continue
+        starts.append(left + match.end())
+    return [(a, a + len(text[a:b].rstrip())) for a, b in zip(starts, starts[1:] + [right])]
+
+
+def passage_spans(text: str, paragraphs: list[dict], *, size: int | None = None,
+                  overlap: int | None = None, tokenizer=None,
+                  max_tokens: int | None = None) -> list[dict]:
     config = get_index_config()
     size = config.chunk_size if size is None else size
     overlap = config.chunk_overlap if overlap is None else overlap
-    if size <= 0:
-        raise ValueError("size must be greater than zero")
-    if overlap < 0 or overlap >= size:
-        raise ValueError("overlap must be between zero and size - 1")
+    if size <= 0 or not 0 <= overlap < size:
+        raise ValueError("size must be positive and overlap between zero and size - 1")
+    if tokenizer is None:
+        tokenizer, max_tokens = tokenizer_limits()
+    capacity = min(size, max_tokens if max_tokens is not None else size)
+    overlap = min(overlap, capacity - 1)
+    units = []
+    for pid, para in enumerate(paragraphs):
+        left, right = para["start"], para["end"]
+        if token_count(text[left:right], tokenizer) <= capacity:
+            units.append((left, right, pid, False))
+            continue
+        for a, b in sentence_spans(text, left, right):
+            units.append((a, b, pid, token_count(text[a:b], tokenizer) > capacity))
+    passages = []
+    pending = []
 
-    sections: list[tuple[str, list[str]]] = []
-    current_title = "Untitled section"
-    current_lines: list[str] = []
-    heading = re.compile(r"^#{1,6}\s+(.+?)\s*#*\s*$")
-    for line in text.splitlines():
-        match = heading.match(line.strip())
-        if match:
-            if current_lines:
-                sections.append((current_title, current_lines))
-            current_title = match.group(1).strip()
-            current_lines = [line.strip()]
-        else:
-            current_lines.append(line)
-    if current_lines:
-        sections.append((current_title, current_lines))
+    def emit(items):
+        a, b = items[0][0], items[-1][1]
+        para = paragraphs[items[0][2]]
+        passages.append({"start": a, "end": b, "section": para["section"],
+                         "section_id": para["section_id"],
+                         "paragraph_start": items[0][2], "paragraph_end": items[-1][2]})
 
-    chunks: list[tuple[str, str]] = []
-    for section_title, lines in sections:
-        paragraphs = [p.strip() for p in re.split(r"\n\s*\n", "\n".join(lines)) if p.strip()]
-        section_chunks = []
-        buf = ""
-        for para in paragraphs:
-            capacity = size if not section_chunks else size - overlap
-            if not buf and len(para) <= capacity:
-                buf = para
-            elif buf and len(buf) + len(para) + 1 <= capacity:
-                buf = f"{buf}\n{para}"
-            else:
-                if buf:
-                    section_chunks.append(buf)
-                    buf = ""
-                capacity = size if not section_chunks else size - overlap
-                if len(para) <= capacity:
-                    buf = para
-                else:
-                    start = 0
-                    while start < len(para):
-                        capacity = size if not section_chunks else size - overlap
-                        part = para[start:start + capacity]
-                        section_chunks.append(part)
-                        start += len(part)
-        if buf:
-            section_chunks.append(buf)
-
-        for i, chunk in enumerate(section_chunks):
-            if i and overlap:
-                chunk = f"{section_chunks[i - 1][-overlap:]}{chunk}"
-            chunks.append((section_title, chunk))
-    return chunks
+    for unit in units:
+        a, b, pid, hard = unit
+        if hard:
+            if pending:
+                emit(pending)
+                pending = []
+            while a < b:
+                end = _prefix_end(text, a, b, capacity, tokenizer)
+                emit([(a, end, pid, True)])
+                if end == b:
+                    break
+                next_start = end
+                while next_start > a and token_count(text[next_start - 1:end], tokenizer) <= overlap:
+                    next_start -= 1
+                a = max(a + 1, next_start)
+            continue
+        if pending and (paragraphs[pending[0][2]]["section_id"] != paragraphs[pid]["section_id"]
+                        or token_count(text[pending[0][0]:b], tokenizer) > capacity):
+            emit(pending)
+            tail = []
+            if paragraphs[pending[-1][2]]["section_id"] == paragraphs[pid]["section_id"]:
+                # A whole paragraph may be larger than the overlap target;
+                # use its trailing complete sentences rather than dropping all overlap.
+                suffix_units = [(left, right, item[2], False) for item in pending
+                                for left, right in sentence_spans(text, item[0], item[1])]
+                for old in reversed(suffix_units):
+                    if (token_count(text[old[0]:pending[-1][1]], tokenizer) > overlap
+                            or token_count(text[old[0]:b], tokenizer) > capacity):
+                        break
+                    tail.insert(0, old)
+            pending = tail
+        pending.append(unit)
+    if pending:
+        emit(pending)
+    return passages
 
 
-def chunk_text(text: str, size: int | None = None,
-               overlap: int | None = None) -> list[str]:
-    """Compatibility helper returning heading-aware Markdown chunks."""
+def chunk_sections_with_locations(text: str, size: int | None = None,
+                                  overlap: int | None = None):
+    paragraphs, _, _ = page_paragraphs(text)
+    return [(p["section"], text[p["start"]:p["end"]], p["start"], p["end"])
+            for p in passage_spans(text, paragraphs, size=size, overlap=overlap)]
+
+
+def chunk_sections(text: str, size: int | None = None, overlap: int | None = None):
+    return [(section, chunk) for section, chunk, _, _
+            in chunk_sections_with_locations(text, size, overlap)]
+
+
+def chunk_text(text: str, size: int | None = None, overlap: int | None = None):
     return [chunk for _, chunk in chunk_sections(text, size, overlap)]
-
-
-def _collapsed_with_positions(text: str) -> tuple[str, list[int]]:
-    """Collapse whitespace while retaining an offset into the extracted page."""
-    characters = []
-    positions = []
-    in_whitespace = False
-    for index, char in enumerate(text):
-        if char.isspace():
-            if characters and not in_whitespace:
-                characters.append(" ")
-                positions.append(index)
-            in_whitespace = True
-        else:
-            characters.append(char)
-            positions.append(index)
-            in_whitespace = False
-    return "".join(characters).strip(), positions
-
-
-def chunk_sections_with_locations(
-    text: str, size: int | None = None, overlap: int | None = None,
-) -> list[tuple[str, str, int | None, int | None]]:
-    """Return chunks plus approximate character offsets in their extracted page.
-
-    The offset is into the post-extraction page text, not a PDF rendering
-    coordinate. It stays useful when Markdown formatting changes whitespace and
-    gives callers a compact, stable passage locator without changing retrieval
-    text or chunking behavior.
-    """
-    page, page_positions = _collapsed_with_positions(text)
-    located = []
-    previous_start = 0
-    for section, chunk in chunk_sections(text, size, overlap):
-        needle, _ = _collapsed_with_positions(chunk)
-        start = page.find(needle, previous_start) if needle else -1
-        if start < 0:
-            # Overlap is concatenated without its original paragraph spacing.
-            # Locate the first and last substantial portions when the complete
-            # chunk cannot be represented as one contiguous Markdown string.
-            prefix = needle[:80].rstrip()
-            suffix = needle[-80:].lstrip()
-            start = page.find(prefix, previous_start) if prefix else -1
-            end_index = page.find(suffix, max(start, previous_start)) if suffix else -1
-            if start >= 0 and end_index >= start:
-                end = end_index + len(suffix)
-            else:
-                start, end = -1, -1
-        else:
-            end = start + len(needle)
-        if start >= 0 and end > start and end <= len(page_positions):
-            character_start = page_positions[start]
-            character_end = page_positions[end - 1] + 1
-            previous_start = start
-        else:
-            character_start = character_end = None
-        located.append((section, chunk, character_start, character_end))
-    return located
 
 
 def guess_title(pdf_path: Path, first_page_text: str) -> str:

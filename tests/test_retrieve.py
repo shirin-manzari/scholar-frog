@@ -46,6 +46,8 @@ def reset_retrieval_state(monkeypatch):
         "ADJACENT_CHUNKS",
     ):
         monkeypatch.delenv(name, raising=False)
+    # These fixtures exercise ranking; expansion has separate committed-context tests.
+    monkeypatch.setattr(retrieval, "expand_context", lambda question, anchors, corpus, snapshot: anchors)
     retrieval._bm25_cache = None
     retrieval._reranker = None
     retrieval._reranker_name = None
@@ -465,7 +467,7 @@ def test_mmr_prefers_diverse_evidence_and_enforces_paper_cap():
     assert [item["id"] for item in capped] == ["a1", "b1"]
 
 
-def test_adjacent_expansion_adds_neighbor_within_budget_and_paper_cap():
+def test_anchor_selection_keeps_neighbors_out_of_ranked_slots():
     digest = "a" * 64
     version = "b" * 16
     corpus = [
@@ -482,10 +484,8 @@ def test_adjacent_expansion_adds_neighbor_within_budget_and_paper_cap():
         max_per_paper=2, diversity=0.75, adjacent_chunks=1,
     )
 
-    assert [item["text"] for item in selected] == ["relevant anchor", "after"]
+    assert [item["text"] for item in selected] == ["relevant anchor"]
     assert selected[0]["selection_reason"] == "anchor"
-    assert selected[1]["selection_reason"] == "adjacent"
-    assert selected[1]["adjacent_to"] == anchor["id"]
 
 
 def test_distinct_anchors_take_priority_over_adjacent_chunks():
