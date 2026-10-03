@@ -52,14 +52,3 @@ python ask.py index rebuild --papers papers
 ```
 
 A failed rebuild keeps the previous index. Your PDFs are never changed.
-
-## Check retrieval
-
-```sh
-python ask.py evaluate --output evaluation-results/latest.json
-```
-
-Add `--generate` to check answers too; it uses your configured model.
-See the [retrieval comparison](evaluations/passage-retrieval-comparison.md) for
-results and limitations. Finding the right page alone doesn’t prove an answer
-is correct.

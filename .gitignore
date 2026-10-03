@@ -1,4 +1,6 @@
 chroma_db/
+/evaluations/
+/evaluation-results/
 papers/*.pdf
 !papers/.gitkeep
 .env
