@@ -2,6 +2,7 @@
 import json
 import os
 import random
+from contextvars import ContextVar
 
 import requests
 from dotenv import load_dotenv
@@ -51,6 +52,10 @@ Return exactly one JSON object and no surrounding prose. For a supported answer
 use {"status":"answered","answer":"..."}. The answer must contain normal
 inline evidence citations. If you cannot answer reliably from the supplied
 evidence, use {"status":"abstained","reason":"insufficient_evidence","answer":""}.
+For insufficient_evidence only, you may also include "missing_fact": an exact
+contiguous excerpt of the original question identifying the fact needed. Never
+place an unsupported proposed answer in this field. Supported partial answers
+are allowed; explicitly say which requested facts are not covered in the provided excerpts.
 The only abstention reasons are no_relevant_evidence, insufficient_evidence,
 and conflicting_evidence. An abstention must have an empty answer; do not put
 claims or explanations in it. Do not claim the evidence conflicts unless the
@@ -171,7 +176,7 @@ def _verify_semantic_support(
         return False, ["A claim refers to evidence that was not supplied for verification."], []
     prompt = build_semantic_verification_prompt(claims, evidence)
     try:
-        raw = _call_backend(backend, SEMANTIC_VERIFIER_SYSTEM, prompt)
+        raw = _budgeted_call(backend, SEMANTIC_VERIFIER_SYSTEM, prompt)
     except Exception as exc:
         return False, [f"Semantic verification could not be completed: {exc}"], []
     passed, errors, verdicts = _parse_semantic_verdict_details(raw, claims)
@@ -190,7 +195,7 @@ def _parse_outcome(raw: str) -> tuple[GenerationStatus | None, AbstentionReason 
         return None, None, None, f"Response is not valid JSON: {exc}"
     if not isinstance(payload, dict):
         return None, None, None, "Structured response must be a JSON object."
-    if set(payload) - {"status", "reason", "answer"}:
+    if set(payload) - {"status", "reason", "answer", "missing_fact"}:
         return None, None, None, "Structured response contains unknown fields."
     try:
         status = GenerationStatus(payload.get("status"))
@@ -200,6 +205,8 @@ def _parse_outcome(raw: str) -> tuple[GenerationStatus | None, AbstentionReason 
     if not isinstance(answer, str):
         return None, None, None, "Structured response answer must be a string."
     if status is GenerationStatus.ANSWERED:
+        if "missing_fact" in payload:
+            return None, None, None, "An answered response cannot contain missing_fact."
         if not answer.strip():
             return None, None, None, "An answered response must contain an answer."
         if payload.get("reason") is not None:
@@ -215,6 +222,9 @@ def _parse_outcome(raw: str) -> tuple[GenerationStatus | None, AbstentionReason 
         reason = AbstentionReason(payload.get("reason"))
     except (ValueError, TypeError):
         return None, None, None, "An abstention must have a recognized reason."
+    if "missing_fact" in payload and (reason is not AbstentionReason.INSUFFICIENT_EVIDENCE
+            or not isinstance(payload["missing_fact"], str) or not payload["missing_fact"].strip()):
+        return None, None, None, "missing_fact requires insufficient_evidence and a nonempty string."
     return status, reason, "", None
 
 
@@ -303,7 +313,7 @@ def _call_anthropic(system: str, user: str) -> str:
     return resp.content[0].text
 
 
-def generate_answer(question: str, chunks: list[dict], max_retries: int | None = None,
+def _generate_answer(question: str, chunks: list[dict], max_retries: int | None = None,
                     coverage_enabled: bool | None = None,
                     validation_enabled: bool = True,
                     semantic_validation_enabled: bool | None = None) -> GenerationResult:
@@ -335,7 +345,7 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
     last_validation = _not_applicable_validation()
 
     while True:
-        response = _call_backend(backend, SYSTEM_PROMPT, base_prompt)
+        response = _budgeted_call(backend, SYSTEM_PROMPT, base_prompt)
         if not original:
             original = response
         status, reason, answer, parse_error = _parse_outcome(response)
@@ -344,8 +354,16 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
             errors.append(parse_error)
         elif status is GenerationStatus.ABSTAINED:
             validation = _not_applicable_validation("Citation validation is not applicable to abstentions.")
-            return GenerationResult(_abstention_message(), original, evidence, validation, attempts,
-                                    errors, GenerationStatus.ABSTAINED, reason)
+            missing = json.loads(response).get("missing_fact")
+            if missing and (missing not in question or len(missing.split()) < 2):
+                last_validation = _not_applicable_validation("missing_fact must be a specific exact excerpt of the question")
+                errors.extend(last_validation.errors)
+            else:
+                result = GenerationResult(_abstention_message(), original, evidence, validation, attempts,
+                                          errors, GenerationStatus.ABSTAINED, reason)
+                if missing:
+                    result.debug["missing_fact"] = missing
+                return result
         else:
             validation = validate_citations(answer, evidence, coverage_enabled)
             if not validation_enabled:
@@ -385,3 +403,113 @@ def generate_answer(question: str, chunks: list[dict], max_retries: int | None =
     return GenerationResult(failure, original, evidence, last_validation, attempts,
                             errors + ["Response failed validation after bounded retries."],
                             GenerationStatus.VALIDATION_FAILED, None)
+
+
+_call_budget = ContextVar("generation_call_budget", default=None)
+
+
+def _budgeted_call(backend, system, user):
+    budget = _call_budget.get()
+    if budget is not None:
+        if budget["used"] >= budget["limit"]:
+            raise RuntimeError("Total generation/verifier call budget exhausted")
+        budget["used"] += 1  # Failed calls also spend the budget.
+    return _call_backend(backend, system, user)
+
+
+def generate_answer(question: str, chunks: list[dict], max_retries: int | None = None,
+                    coverage_enabled: bool | None = None, validation_enabled: bool = True,
+                    semantic_validation_enabled: bool | None = None, *,
+                    recovery_fn=None, debug: dict | None = None) -> GenerationResult:
+    """Compatibility entrypoint; one opt-in retrieval round shares all call budgets."""
+    from src.retrieve import _enabled, RetrievalConfig, retrieve
+    from src.recovery import recovery_query, combine_evidence
+    settings = dict(max_retries=max_retries, coverage_enabled=coverage_enabled,
+                    validation_enabled=validation_enabled,
+                    semantic_validation_enabled=semantic_validation_enabled)
+    retries = int(os.getenv('CITATION_MAX_RETRIES', '1')) if max_retries is None else max_retries
+    # Existing retry behavior remains available; recovery gets no fresh retries.
+    budget = {"used": 0, "limit": _generation_limit('GENERATION_TOTAL_CALLS', 2 * (retries + 1) + 2)}
+    token = _call_budget.set(budget)
+    details = {"recovery_rounds": 0, "additional_queries": [], "recovery_success": False}
+    try:
+        try:
+            result = _generate_answer(question, chunks, **settings)
+        except RuntimeError as exc:
+            if 'call budget exhausted' not in str(exc):
+                raise
+            result = GenerationResult(_abstention_message(), '', assign_evidence(chunks),
+                _not_applicable_validation(str(exc)), 0, [str(exc)],
+                GenerationStatus.ABSTAINED, AbstentionReason.INSUFFICIENT_EVIDENCE)
+        details["generation_retries"] = result.regeneration_attempts
+        verdicts = result.validation.semantic_verdicts
+        missing = result.debug.get('missing_fact')
+        if missing:
+            verdicts = [{'supported': False, 'claim': missing}]
+        query = recovery_query(question, verdicts)
+        if (_enabled('EVIDENCE_RECOVERY') and validation_enabled
+                and (semantic_validation_enabled if semantic_validation_enabled is not None else _enabled('CITATION_SEMANTIC_VALIDATION', 'true')) and query
+                and result.status in {GenerationStatus.VALIDATION_FAILED, GenerationStatus.ABSTAINED} and budget['limit'] - budget['used'] >= 2):
+            details.update(recovery_rounds=1, recovery_reason='missing_fact' if missing else 'unsupported_material_claim',
+                           additional_queries=[query])
+            retrieval_debug = {}
+            try:
+                if recovery_fn is None:
+                    from src.evidence_policy import RetrievalPlan
+                    scope = chunks[0].get('metadata', {}).get('retrieval_scope', {}) if chunks else {}
+                    if not scope.get('plan'):
+                        raise ValueError('Recovery requires recorded retrieval scope or an explicit recovery callback')
+                    plan = RetrievalPlan(**scope['plan'])
+                    more = retrieve(query, top_k=scope.get('anchor_budget'),
+                                    retrieval_mode=scope.get('mode'), plan=plan, debug=retrieval_debug)
+                    revision = scope.get('committed_revision')
+                    if revision and retrieval_debug.get('committed_revision') != revision:
+                        more = []
+                        details['recovery_error'] = 'Committed snapshot changed; recovery evidence excluded'
+                else:
+                    more = recovery_fn(query)
+            except Exception as exc:
+                more = []
+                details['recovery_error'] = str(exc)
+            limit = chunks[0].get('metadata', {}).get('retrieval_scope', {}).get('anchor_budget', RetrievalConfig.from_env().final_results) if chunks else RetrievalConfig.from_env().final_results
+            partial_question = question + "\nAnswer only supported parts. Explicitly state which requested facts are not covered in the provided excerpts; abstain if no material part is supported."
+            combined = combine_evidence(partial_question, chunks, more, limit)
+            details['new_evidence_count'] = len(assign_evidence(combined)) - len(assign_evidence(chunks))
+            details['retrieval'] = retrieval_debug
+            from src.context_budget import generation_token_counter
+            details['combined_evidence_tokens'] = generation_token_counter().count(build_context(combined))
+            details['combined_evidence_count'] = len(assign_evidence(combined))
+            # Re-answer even if no new block fits: a supported partial answer is allowed.
+            try:
+                result = _generate_answer(partial_question, combined, **{**settings, 'max_retries': 0})
+            except RuntimeError as exc:
+                if 'call budget exhausted' not in str(exc):
+                    raise
+                result = GenerationResult(_abstention_message(), '', assign_evidence(combined),
+                    _not_applicable_validation(str(exc)), 0, [str(exc)],
+                    GenerationStatus.ABSTAINED, AbstentionReason.INSUFFICIENT_EVIDENCE)
+            original_ids = {item.chunk_id for item in assign_evidence(chunks)}
+            cited_new = any(item.chunk_id not in original_ids for item in result.validation.valid_evidence)
+            details['recovery_success'] = (result.status is GenerationStatus.ANSWERED
+                and result.validation.semantic_support == 'passed' and cited_new)
+            details['recovery_success_definition'] = 'New evidence cited in a semantically supported answer; gap resolution needs human review'
+            details['recovery_outcome'] = ('supported_new_evidence' if details['recovery_success']
+                else 'supported_partial' if result.status is GenerationStatus.ANSWERED else 'abstained')
+            result.regeneration_attempts += details['generation_retries']
+            if result.status is GenerationStatus.VALIDATION_FAILED:
+                result.status = GenerationStatus.ABSTAINED
+                result.abstention_reason = AbstentionReason.INSUFFICIENT_EVIDENCE
+                result.answer = _abstention_message()
+        elif (_enabled('EVIDENCE_RECOVERY') and query
+                and result.status is GenerationStatus.VALIDATION_FAILED
+                and budget['limit'] - budget['used'] < 2):
+            details['recovery_skipped_reason'] = 'total_call_budget'
+            result.status = GenerationStatus.ABSTAINED
+            result.abstention_reason = AbstentionReason.INSUFFICIENT_EVIDENCE
+            result.answer = _abstention_message()
+        result.debug.update(details, model_calls=budget['used'], total_call_budget=budget['limit'])
+        if debug is not None:
+            debug.update(result.debug)
+        return result
+    finally:
+        _call_budget.reset(token)

@@ -71,6 +71,7 @@ class GenerationResult:
     error_messages: list[str] = field(default_factory=list)
     status: GenerationStatus = GenerationStatus.ANSWERED
     abstention_reason: AbstentionReason | None = None
+    debug: dict = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

@@ -247,6 +247,7 @@ def main():
             f"Semantic support: {result.validation.semantic_support.replace('_', ' ')}"
         )
         console.print(f"Regeneration attempts: {result.regeneration_attempts}")
+        console.print_json(data=result.debug)
         for error in result.error_messages:
             console.print(f"  [red]{error}[/red]")
         for item in result.evidence:
