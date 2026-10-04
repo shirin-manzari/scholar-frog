@@ -106,7 +106,7 @@ def committed_snapshot(*, collection_count: int = 0) -> CommittedSnapshot:
                             "incomplete or corrupted",
                             f"Chunk ID {chunk_id!r} is referenced by multiple committed documents.",
                         )
-                    owners[chunk_id] = owner
+                    owners[chunk_id] = {**owner, "document_version": chunk_id.rsplit("-", 1)[-1]}
                 revision_rows.append((digest, ids, paths))
             revision_json = json.dumps(
                 [config_fingerprint, revision_rows], sort_keys=True, separators=(",", ":")

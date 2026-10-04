@@ -372,7 +372,7 @@ def test_real_chroma_partial_insert_is_invisible_then_recovered(tmp_path, monkey
     recovered = sync.sync_library(str(papers))
     assert recovered.succeeded == 1
     hits = retrieve.retrieve("chroma", top_k=10, retrieval_mode="hybrid")
-    assert len(hits) == 3
+    assert len(hits) == 2  # Default paper cap applies to selected anchors in hybrid mode.
     assert all(hit["source"] == "paper.pdf" for hit in hits)
     assert all(hit["page"] in {1, 2, 3} for hit in hits)
 

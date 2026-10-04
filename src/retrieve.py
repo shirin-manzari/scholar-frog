@@ -573,31 +573,58 @@ def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
 def expand_context(question: str, anchors: list[dict], corpus: list[dict], snapshot,
                    *, tokenizer=None, radius: int | None = None,
                    budget: int | None = None, window: int | None = None,
-                   answer_reserve: int | None = None) -> list[dict]:
-    """Expand committed anchors, page by page, without changing ranking scores.
+                   answer_reserve: int | None = None,
+                   expansion_budget: int | None = None,
+                   same_section: bool | None = None) -> list[dict]:
+    """Reserve all anchor intervals, then spend a separate budget on context.
 
-    Budget counts formatted evidence and the complete initial generation prompt
-    with the embedding tokenizer (a local estimate, not the backend tokenizer).
-    Mandatory anchor intervals are reserved before optional paragraph expansion.
+    Evidence remains page-specific. Anchor scores and exact locations live in
+    anchor_hits; related_anchor_ids also records shared, unranked neighbors.
     """
-    if not anchors:
-        return []
-    from src.ingest import token_count, tokenizer_limits
+    from src.context_budget import TokenCounter, generation_token_counter
     from src.generate import build_context, build_user_prompt, SYSTEM_PROMPT
 
-    tokenizer = tokenizer if tokenizer is not None else tokenizer_limits()[0]
+    counter = TokenCounter(tokenizer, "explicit-tokenizer", "") if tokenizer is not None else generation_token_counter()
     radius = _non_negative_int("CONTEXT_PARAGRAPHS", 1) if radius is None else radius
     budget = _positive_int("CONTEXT_BUDGET_TOKENS", 4000) if budget is None else budget
     window = _positive_int("CONTEXT_WINDOW_TOKENS", 8192) if window is None else window
     answer_reserve = _positive_int("CONTEXT_ANSWER_RESERVE", 1024) if answer_reserve is None else answer_reserve
-    if radius < 0 or min(budget, window, answer_reserve) <= 0:
-        raise ValueError("Context budgets must be positive and paragraph radius non-negative")
+    expansion_budget = (_non_negative_int("CONTEXT_EXPANSION_TOKENS", 1500)
+                        if expansion_budget is None else expansion_budget)
+    framing = _positive_int("CONTEXT_FRAMING_RESERVE", 32)
+    retry_reserve = _non_negative_int("CONTEXT_RETRY_RESERVE", 256)
+    if same_section is None:
+        value = os.getenv("CONTEXT_SAME_SECTION", "true").lower()
+        if value not in {"true", "false", "1", "0", "yes", "no"}:
+            raise ValueError("CONTEXT_SAME_SECTION must be true or false")
+        same_section = value in {"true", "1", "yes"}
+    values = (radius, budget, window, answer_reserve, expansion_budget)
+    if any(not isinstance(v, int) or isinstance(v, bool) for v in values):
+        raise ValueError("Context budgets and paragraph radius must be integers")
+    if radius < 0 or expansion_budget < 0 or min(budget, window, answer_reserve) <= 0:
+        raise ValueError("Context budgets must be positive; paragraph radius and expansion budget non-negative")
+    fixed = counter.prompt_tokens(SYSTEM_PROMPT, build_user_prompt(question, []), framing)
+    if fixed + retry_reserve + answer_reserve >= window:
+        raise ValueError("CONTEXT_WINDOW_TOKENS leaves no space for evidence after system instructions, "
+                         "question, CONTEXT_FRAMING_RESERVE, CONTEXT_RETRY_RESERVE and CONTEXT_ANSWER_RESERVE; "
+                         "increase the window or reduce reserves/question length; no evidence was truncated.")
+    if not anchors:
+        return []
+    # Stable deduplication before interval assembly; never re-select anchors here.
+    unique_anchors = {}
+    for item in anchors:
+        unique_anchors.setdefault(item["id"], item)
+    anchors = list(unique_anchors.values())
 
     def version_key(item):
         meta = item["metadata"]
         return (meta["document_id"], meta["document_version"])
 
-    committed = {item["id"]: item for item in corpus if item["id"] in snapshot.chunk_ids}
+    committed = {item["id"]: item for item in corpus
+                 if item["id"] in snapshot.chunk_ids
+                 and snapshot.owners.get(item["id"], {}).get("document_id") == item["metadata"].get("document_id")
+                 and (not snapshot.owners[item["id"]].get("document_version")
+                      or snapshot.owners[item["id"]]["document_version"] == item["metadata"].get("document_version"))}
     pages = {}
     for item in committed.values():
         meta = item["metadata"]
@@ -618,6 +645,9 @@ def expand_context(question: str, anchors: list[dict], corpus: list[dict], snaps
             raise ValueError("Cannot expand an uncommitted search hit")
         if not meta.get("document_version") or "page_context" not in meta:
             raise ValueError("Search hit has no versioned paragraph context; rebuild the index")
+        stored = committed[anchor["id"]]
+        if stored["text"] != anchor["text"] or stored["metadata"] != meta:
+            raise ValueError("Search hit and committed record disagree; retry retrieval")
         key = (*version_key(anchor), int(anchor["page"]))
         if key not in pages:
             raise ValueError("Search hit has no committed paragraph context; rebuild the index")
@@ -648,6 +678,8 @@ def expand_context(question: str, anchors: list[dict], corpus: list[dict], snaps
         result = []
         for key, start, end, ranks in groups:
             anchor = anchors[min(ranks)]
+            contained = [r for r, (anchor_key, left, right, _) in enumerate(anchor_intervals)
+                         if anchor_key == key and start <= left and right <= end]
             text = pages[key]["text"][start:end]
             meta = {**anchor["metadata"], "page": key[2],
                     "character_start": start, "character_end": end}
@@ -667,23 +699,53 @@ def expand_context(question: str, anchors: list[dict], corpus: list[dict], snaps
                                          "text": anchors[r]["text"],
                                          "character_start": anchors[r]["metadata"]["character_start"],
                                          "character_end": anchors[r]["metadata"]["character_end"],
+                                         "rank": r + 1,
+                                         "selection_reason": anchors[r].get("selection_reason", "anchor"),
                                          "scores": {k: v for k, v in anchors[r].items()
                                                     if k.endswith(("score", "distance"))}}
                                         for r in sorted(ranks)]}
+            evidence["anchor_hits"] = [hit for hit in evidence["anchor_hits"]
+                                       if hit["id"] in {anchors[r]["id"] for r in contained}]
+            # A context block is not an independently ranked search result.
+            exact = len(contained) == 1 and text == anchors[contained[0]]["text"]
+            for field in list(evidence):
+                if field.endswith(("score", "distance")):
+                    evidence[field] = anchors[contained[0]].get(field) if exact else None
+            evidence.pop("anchor_rank", None)
+            evidence["group_rank"] = min(ranks) + 1
+            evidence["is_anchor"] = bool(contained)
+            evidence["evidence_kind"] = "anchor" if exact else ("anchor_context" if contained else "expansion")
+            evidence["related_anchor_ids"] = [anchors[r]["id"] for r in sorted(ranks | set(contained))]
+            evidence["anchor_id"] = anchors[contained[0]]["id"] if contained else None
+            evidence["adjacent_to"] = evidence["related_anchor_ids"] if not contained else None
+            evidence["selection_reason"] = evidence["evidence_kind"]
+            meta["evidence_kind"] = evidence["evidence_kind"]
+            meta["related_anchor_ids"] = evidence["related_anchor_ids"]
             meta["anchor_hits"] = evidence["anchor_hits"]
             result.append(evidence)
         return result
 
-    def fits(spans):
-        result = render(spans)
-        return (token_count(build_context(result), tokenizer) <= budget
-                and token_count(SYSTEM_PROMPT + "\n" + build_user_prompt(question, result), tokenizer,
-                                special=True) + answer_reserve <= window)
+    anchor_intervals = list(intervals)
 
-    if not fits(intervals):
-        raise ValueError("Selected evidence exceeds the context budget. Increase CONTEXT_BUDGET_TOKENS/"
-                         "CONTEXT_WINDOW_TOKENS, shorten the question, or reduce top_k; no evidence was truncated.")
-    # Expand the anchor's own paragraphs before neighbors, fairly across anchors.
+    def sizes(spans):
+        result = render(spans)
+        evidence_tokens = counter.count(build_context(result))
+        prompt_tokens = counter.prompt_tokens(SYSTEM_PROMPT, build_user_prompt(question, result), framing) + retry_reserve
+        return evidence_tokens, prompt_tokens
+
+    anchor_tokens, anchor_prompt_tokens = sizes(intervals)
+    if anchor_tokens > budget or anchor_prompt_tokens + answer_reserve > window:
+        raise ValueError(f"Selected anchors exceed the context budget: evidence={anchor_tokens}/{budget}, "
+                         f"prompt+answer={anchor_prompt_tokens + answer_reserve}/{window} tokens "
+                         f"({counter.method}). Increase CONTEXT_BUDGET_TOKENS/CONTEXT_WINDOW_TOKENS, "
+                         "shorten the question, or reduce top_k; no evidence was truncated.")
+
+    def fits(spans):
+        evidence_tokens, prompt_tokens = sizes(spans)
+        return (evidence_tokens <= budget and evidence_tokens - anchor_tokens <= expansion_budget
+                and prompt_tokens + answer_reserve <= window)
+
+    # Stronger anchor groups spend the optional budget first, nearest context first.
     choices = []
     for rank, anchor in enumerate(anchors):
         meta = anchor["metadata"]
@@ -697,13 +759,24 @@ def expand_context(question: str, anchors: list[dict], corpus: list[dict], snaps
             continue
         for i, (key, pid, para) in enumerate(ordered):
             distance = min(abs(i - pos) for pos in positions)
-            if distance <= radius and para["section_id"] == meta["section_id"]:
-                choices.append((distance, rank, key, para["start"], para["end"]))
-    for distance, rank, key, start, end in sorted(choices):
+            if radius > 0 and expansion_budget > 0 and distance <= radius and (not same_section or para["section_id"] == meta["section_id"]):
+                choices.append((rank, distance, key, para["start"], para["end"]))
+    for rank, distance, key, start, end in sorted(choices):
         candidate = intervals + [(key, start, end, rank)]
         if fits(candidate):
             intervals = candidate
-    return render(intervals)
+    result = render(intervals)
+    evidence_tokens, prompt_tokens = sizes(intervals)
+    usage = {"token_count_method": counter.method, "token_count_limitation": counter.limitation,
+             "anchor_tokens": anchor_tokens, "evidence_tokens": evidence_tokens,
+             "expansion_tokens": max(0, evidence_tokens - anchor_tokens),
+             "prompt_tokens": prompt_tokens, "answer_reserve": answer_reserve,
+             "window_tokens": window, "anchor_count": len(anchors),
+             "evidence_budget": budget, "expansion_budget": expansion_budget,
+             "framing_reserve": framing, "retry_reserve": retry_reserve}
+    for item in result:
+        item["metadata"]["context_usage"] = usage
+    return result
 
 
 _THIS_PAPER = re.compile(r"\bthis\s+(?:paper|article|study|survey)\b", re.IGNORECASE)
@@ -759,20 +832,20 @@ def _retrieve_locked(question: str, top_k: int | None = None,
     dense = _dense_search(search_question, collection, count, config.dense_candidates,
                           snapshot, document_id)
     if mode == "dense":
-        results = dense[:top_k]
+        results = dense
     else:
         bm25 = _bm25_search(search_question, collection, config.bm25_candidates,
                             snapshot, document_id)
         fused = reciprocal_rank_fusion(dense, bm25, k=config.rrf_k)
         if mode == "hybrid":
-            results = fused[:top_k]
+            results = fused
         else:
             candidates = fused[:config.rerank_candidates]
             reranked = _rerank(search_question, candidates, config.reranker_model)
             _, corpus, _ = _get_bm25_index(collection, snapshot)
             if document_id is not None:
                 corpus = [result for result in corpus if _paper_key(result) == document_id]
-            max_per_paper = top_k if document_id is not None else config.max_chunks_per_paper
+            max_per_paper = config.max_chunks_per_paper
             results = _select_context(
                 reranked,
                 corpus,
@@ -804,7 +877,14 @@ def _retrieve_locked(question: str, top_k: int | None = None,
                         paper_counts[key] = paper_counts.get(key, 0) + 1
                     results = focused
 
-    results = expand_context(question, results, correction_corpus, snapshot)
+    counts = Counter()
+    anchors = []
+    for result in results:
+        key = _paper_key(result)
+        if counts[key] < config.max_chunks_per_paper and len(anchors) < top_k:
+            anchors.append({**result, "is_anchor": True, "anchor_rank": len(anchors) + 1})
+            counts[key] += 1
+    results = expand_context(question, anchors, correction_corpus, snapshot)
 
     if paper is not None:
         return [

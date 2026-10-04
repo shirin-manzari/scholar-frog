@@ -100,7 +100,10 @@ def test_expansion_section_document_version_and_page_boundaries():
     assert [result['page'] for result in results] == [1, 2]
     assert results[0]['text'] == '# Methods\n\nBefore.\n\nAnchor.'
     assert results[1]['text'] == 'Continuation.'
-    assert all(result['distance'] == 0.123 for result in results)
+    assert all(result['distance'] is None for result in results)
+    assert results[0]['anchor_hits'][0]['scores']['distance'] == 0.123
+    assert results[1]['anchor_hits'] == []
+    assert results[1]['evidence_kind'] == 'expansion'
     assert all(result['metadata']['document_version'] == 'write1' for result in results)
     for result in results:
         page = next(text for number, text in [(1, '# Methods\n\nBefore.\n\nAnchor.'),
@@ -224,3 +227,110 @@ def test_default_token_configuration_keeps_the_existing_embedding_model():
     config = IndexConfig()
     assert (config.chunk_size, config.chunk_overlap) == (300, 50)
     assert config.embedding_model == 'BAAI/bge-small-en-v1.5'
+
+
+def test_higher_ranked_group_spends_expansion_budget_before_lower_rank_neighbors():
+    high = corpus_for([(1, 'HIGH.\n\nNearHIGH.\n\nFarHIGH.')], doc='high')
+    low = corpus_for([(1, 'LOW.\n\nNearLOW.')], doc='low')
+    result = expand([high[0], low[0]], high + low, radius=2, expansion_budget=22)
+    assert result[0]['text'] == 'HIGH.\n\nNearHIGH.\n\nFarHIGH.'
+    assert result[1]['text'] == 'LOW.'
+    assert {hit['id'] for item in result for hit in item['anchor_hits']} == {high[0]['id'], low[0]['id']}
+    assert result[0]['metadata']['context_usage']['expansion_tokens'] <= 22
+
+
+def test_shared_neighbors_deduplicate_and_keep_both_anchor_relationships():
+    corpus = corpus_for([(1, 'FIRST.\n\nSHARED.\n\nLAST.')])
+    anchors = [corpus[0], corpus[2], corpus[0]]
+    result = expand(anchors, corpus, radius=1)
+    assert len(result) == 1
+    assert result[0]['text'] == 'FIRST.\n\nSHARED.\n\nLAST.'
+    assert result[0]['related_anchor_ids'] == [corpus[0]['id'], corpus[2]['id']]
+    assert [hit['id'] for hit in result[0]['anchor_hits']] == result[0]['related_anchor_ids']
+    assert result[0]['metadata']['context_usage']['anchor_count'] == 2
+
+
+def test_overlapping_anchor_intervals_keep_exact_text_and_scores_without_repetition():
+    corpus = corpus_for([(1, 'First sentence. Second sentence. Third sentence.')])
+    full = corpus[0]
+    left_end = full['text'].index(' Third')
+    right_start = full['text'].index('Second')
+    left = {**full, 'id': 'left', 'text': full['text'][:left_end], 'distance': 0.1,
+            'metadata': {**full['metadata'], 'character_end': left_end}}
+    right = {**full, 'id': 'right', 'text': full['text'][right_start:], 'distance': 0.2,
+             'metadata': {**full['metadata'], 'character_start': right_start}}
+    result = expand([left, right], [left, right], radius=0)
+    assert result[0]['text'] == full['text']
+    assert [(hit['text'], hit['scores']['distance']) for hit in result[0]['anchor_hits']] == [(left['text'], 0.1), (right['text'], 0.2)]
+
+
+@pytest.mark.parametrize('radius,extra', [(0, 100), (3, 0)])
+def test_expansion_can_be_disabled_without_filling_partial_anchor_paragraph(radius, extra):
+    corpus = corpus_for([(1, 'First sentence. Second sentence.')])
+    anchor = corpus[0]
+    anchor['text'] = 'First sentence.'
+    anchor['metadata']['character_end'] = len(anchor['text'])
+    result = expand([anchor], corpus, radius=radius, expansion_budget=extra)
+    assert result[0]['text'] == anchor['text']
+    assert result[0]['evidence_kind'] == 'anchor'
+
+
+def test_formatted_evidence_overhead_is_included_in_anchor_budget():
+    corpus = corpus_for([(1, 'Anchor.')])
+    with pytest.raises(ValueError, match='Selected anchors.*no evidence was truncated'):
+        retrieve.expand_context('Q?', corpus, corpus, snapshot_for(corpus), tokenizer=TOKENIZER,
+                                budget=len('Anchor.'), window=20000, answer_reserve=500)
+
+
+def test_chat_framing_and_retry_reserve_are_included(monkeypatch):
+    corpus = corpus_for([(1, 'Anchor.')])
+    monkeypatch.setenv('CONTEXT_FRAMING_RESERVE', '77')
+    monkeypatch.setenv('CONTEXT_RETRY_RESERVE', '123')
+    result = expand(corpus, corpus, radius=0)
+    usage = result[0]['metadata']['context_usage']
+    expected = (ingest.token_count(SYSTEM_PROMPT, TOKENIZER, special=True)
+                + ingest.token_count(build_user_prompt('Question?', result), TOKENIZER, special=True)
+                + 200)
+    assert usage['prompt_tokens'] == expected
+    with pytest.raises(ValueError, match='Selected anchors'):
+        retrieve.expand_context('Question?', corpus, corpus, snapshot_for(corpus), tokenizer=TOKENIZER,
+                                budget=10000, window=expected + 499, answer_reserve=500)
+
+
+@pytest.mark.parametrize('kwargs', [{'budget': 0}, {'window': 0}, {'answer_reserve': -1},
+                                    {'expansion_budget': -1}, {'radius': -1}, {'radius': 1.5}])
+def test_impossible_budget_values_are_actionable(kwargs):
+    corpus = corpus_for([(1, 'Anchor.')])
+    options = dict(tokenizer=TOKENIZER, budget=10000, window=20000, answer_reserve=500)
+    options.update(kwargs)
+    with pytest.raises(ValueError, match='Context budgets'):
+        retrieve.expand_context('Q?', corpus, corpus, snapshot_for(corpus), **options)
+
+
+def test_orphan_wrong_owner_and_wrong_committed_version_cannot_enter_context():
+    corpus = corpus_for([(1, 'Anchor.'), (2, 'Neighbor.')])
+    snapshot = snapshot_for(corpus)
+    snapshot.owners[corpus[1]['id']]['document_id'] = 'other'
+    result = retrieve.expand_context('Q?', corpus[:1], corpus, snapshot, tokenizer=TOKENIZER,
+                                    radius=5, budget=10000, window=20000, answer_reserve=500)
+    assert len(result) == 1 and result[0]['text'] == 'Anchor.'
+    snapshot.owners[corpus[0]['id']]['document_version'] = 'other-write'
+    with pytest.raises(ValueError, match='uncommitted'):
+        retrieve.expand_context('Q?', corpus[:1], corpus, snapshot, tokenizer=TOKENIZER,
+                                budget=10000, window=20000, answer_reserve=500)
+
+
+def test_order_is_stable_when_corpus_and_snapshot_ids_are_permuted():
+    corpus = corpus_for([(1, 'Before.\n\nAnchor.'), (2, 'After.')])
+    forward = expand([corpus[1]], corpus, radius=3)
+    reverse = expand([corpus[1]], list(reversed(corpus)), radius=3)
+    assert forward == reverse
+    assert [hit['page'] for hit in forward] == [1, 2]
+
+
+def test_section_crossing_requires_explicit_opt_in():
+    corpus = corpus_for([(1, '# Methods\n\nAnchor.\n\n# Results\n\nFinding.')])
+    default = expand([corpus[1]], corpus, radius=5)
+    opted_in = expand([corpus[1]], corpus, radius=5, same_section=False)
+    assert all('Finding.' not in item['text'] for item in default)
+    assert any('Finding.' in item['text'] for item in opted_in)

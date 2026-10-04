@@ -27,7 +27,7 @@ def evaluate_main(argv=None):
     parser.add_argument("--dataset", default=str(DEFAULT_DATASET),
                         help="Versioned evaluation JSON file")
     parser.add_argument("--top-k", type=int, default=5,
-                        help="Retrieved passages to evaluate (default: 5)")
+                        help="Maximum selected anchors to evaluate (default: 5)")
     parser.add_argument("--retrieval", choices=RETRIEVAL_MODES,
                         help="Retrieval mode (default: RETRIEVAL_MODE)")
     parser.add_argument("--generate", action="store_true",
@@ -117,7 +117,7 @@ def main():
     parser.add_argument("--papers", default="papers", help="Folder of PDFs (default: ./papers)")
     parser.add_argument("--paper", help="Search only this paper (path relative to --papers)")
     parser.add_argument("--top-k", type=int, default=config.final_results,
-                        help="Number of chunks to retrieve")
+                        help="Maximum selected anchors; surrounding context uses a separate budget")
     parser.add_argument("--retrieval", choices=RETRIEVAL_MODES, default=config.mode,
                         help="Retrieval mode (default: from RETRIEVAL_MODE or hybrid-rerank)")
     parser.add_argument("--compare", action="store_true",
@@ -187,7 +187,7 @@ def main():
                     )
                     console.print(
                         f"  {result['id']} | {result['title']} — {result['section']} "
-                        f"— p.{result['page']} ({result['source']}) | {scores}"
+                        f"— p.{result['page']} ({result['source']}) | {result.get('evidence_kind', 'anchor')} | {scores}"
                     )
                     console.print(f"    {result['text'][:400].strip()}\n")
         except (IndexCompatibilityError, ValueError) as exc:

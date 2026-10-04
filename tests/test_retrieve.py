@@ -668,3 +668,18 @@ def test_generation_context_uses_retrieved_citation_metadata(collection, monkeyp
 
     assert context.startswith("[E1]\nSource: Paper A (paper-a.pdf)\nPage: 2\nContent:")
     assert hit["metadata"]["file_hash"] == "hash-a"
+
+
+@pytest.mark.parametrize('mode', retrieval.RETRIEVAL_MODES)
+def test_paper_cap_applies_to_anchors_in_every_mode_even_selected_paper(collection, monkeypatch, mode):
+    for row in collection.rows.values():
+        row['metadata'].update(document_id='same', file_hash='same', source='same.pdf')
+    monkeypatch.setattr(retrieval, 'get_collection', lambda: collection)
+    monkeypatch.setattr(retrieval, '_get_committed_snapshot', committed_snapshot)
+    monkeypatch.setattr(retrieval, 'get_embedding_model', lambda: FakeEmbeddingModel())
+    monkeypatch.setattr(retrieval, 'get_index_config', lambda: __import__('src.index_config', fromlist=['IndexConfig']).IndexConfig(embedding_dimension=2))
+    monkeypatch.setattr(retrieval, '_rerank', lambda question, candidates, model: [dict(c, reranker_score=0.8) for c in candidates])
+    monkeypatch.setenv('MAX_CHUNKS_PER_PAPER', '1')
+    hits = retrieval.retrieve('retrieval', top_k=3, retrieval_mode=mode, paper='same.pdf')
+    assert len(hits) == 1
+    assert hits[0]['is_anchor'] and hits[0]['anchor_rank'] == 1
