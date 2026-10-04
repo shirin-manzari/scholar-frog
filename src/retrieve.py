@@ -10,6 +10,8 @@ from difflib import SequenceMatcher, get_close_matches
 
 from dotenv import load_dotenv
 
+from src.relevance import score_contract, effective_threshold
+
 from src.ingest import get_collection, get_embedding_model, get_index_config
 
 load_dotenv()
@@ -159,6 +161,13 @@ class RetrievalConfig:
         reranker_model = os.getenv("RERANKER_MODEL", "BAAI/bge-reranker-base").strip()
         if not reranker_model:
             raise ValueError("RERANKER_MODEL must not be empty")
+        transform = os.getenv("RERANKER_SCORE_TRANSFORM", "model-default")
+        if transform not in {"model-default", "raw", "sigmoid"}:
+            raise ValueError("RERANKER_SCORE_TRANSFORM must be model-default, raw or sigmoid")
+        if (reranker_model != "BAAI/bge-reranker-base" or transform != "model-default") and (
+                "RERANKER_MIN_SCORE" not in os.environ and not os.getenv("RELEVANCE_CALIBRATION", "").strip()):
+            raise ValueError("Incompatible implicit baseline threshold: set a model-specific "
+                             "RERANKER_MIN_SCORE or RELEVANCE_CALIBRATION for the new model/activation")
         return cls(
             mode=mode,
             dense_candidates=_positive_int("DENSE_CANDIDATES", 20),
@@ -492,14 +501,19 @@ def reciprocal_rank_fusion(*ranked_lists: list[dict], k: int = 60,
 def _create_reranker(model_name: str):
     from sentence_transformers import CrossEncoder
 
-    return CrossEncoder(model_name, device="cpu", max_length=512)
+    kwargs = {"device": "cpu", "max_length": 512}
+    revision = os.getenv("RERANKER_REVISION", "").strip()
+    if revision:
+        kwargs["revision"] = revision
+    return CrossEncoder(model_name, **kwargs)
 
 
 def _get_reranker(model_name: str):
     global _reranker, _reranker_name
-    if _reranker is None or _reranker_name != model_name:
+    cache_key = (model_name, os.getenv("RERANKER_REVISION", ""))
+    if _reranker is None or _reranker_name != cache_key:
         _reranker = _create_reranker(model_name)
-        _reranker_name = model_name
+        _reranker_name = cache_key
     return _reranker
 
 
@@ -508,7 +522,15 @@ def _rerank(question: str, candidates: list[dict], model_name: str) -> list[dict
         return []
     model = _get_reranker(model_name)
     pairs = [(question, candidate["text"]) for candidate in candidates]
-    scores = model.predict(pairs, batch_size=16, show_progress_bar=False)
+    contract = score_contract(model, model_name)
+    kwargs = {}
+    if contract["transformation"] != "model-default":
+        from torch import nn
+        kwargs["activation_fn"] = nn.Identity() if contract["transformation"] == "raw" else nn.Sigmoid()
+    scores = model.predict(pairs, batch_size=16, show_progress_bar=False, **kwargs)
+    if len(scores) != len(candidates) or any(not math.isfinite(float(v)) for v in scores):
+        raise ValueError("Reranker returned invalid scalar scores")
+    threshold = effective_threshold(contract, RetrievalConfig.from_env().reranker_min_score)
     ranked = sorted(
         zip(candidates, scores),
         key=lambda pair: (-float(pair[1]), -pair[0]["rrf_score"], pair[0]["id"]),
@@ -517,6 +539,7 @@ def _rerank(question: str, candidates: list[dict], model_name: str) -> list[dict
     for candidate, score in ranked:
         result = candidate.copy()
         result["reranker_score"] = float(score)
+        result["score_contract"] = {**contract, "effective_threshold": threshold}
         results.append(result)
     return results
 
@@ -1042,7 +1065,7 @@ def _retrieve_locked(question: str, top_k: int | None = None,
                 reranked,
                 corpus,
                 top_k=top_k,
-                min_score=config.reranker_min_score,
+                min_score=reranked[0].get("score_contract", {}).get("effective_threshold", config.reranker_min_score) if reranked else config.reranker_min_score,
                 max_per_paper=max_per_paper,
                 diversity=config.mmr_lambda,
                 adjacent_chunks=config.adjacent_chunks,
@@ -1051,7 +1074,7 @@ def _retrieve_locked(question: str, top_k: int | None = None,
             for item in overview:
                 item["retrieval_queries"] = [{"query": question, "original": True,
                                               "method": "structural", "rank": None, "score": None}]
-            if overview:
+            if overview and not os.getenv("RELEVANCE_CALIBRATION", "").strip():
                 if _DIMENSION_LIST_QUESTION.search(question) and all(
                     item["selection_reason"] == "direct_list" for item in overview
                 ):
