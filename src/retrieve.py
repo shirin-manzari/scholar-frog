@@ -5,11 +5,12 @@ import os
 import random
 import re
 from collections import Counter
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 from difflib import SequenceMatcher, get_close_matches
 
 from dotenv import load_dotenv
 
+from src.evidence_policy import RetrievalPlan, infer_plan, select_anchors
 from src.relevance import score_contract, effective_threshold
 
 from src.ingest import get_collection, get_embedding_model, get_index_config
@@ -91,7 +92,7 @@ def _get_terminology(collection, snapshot, corpus, document_id=None):
     resolved = {}
     for acronym, meanings in _terminology_cache[1].items():
         scoped = [value for value in meanings.values()
-                  if document_id is None or document_id in value["papers"]]
+                  if document_id is None or (bool(document_id & value["papers"]) if isinstance(document_id, set) else document_id in value["papers"])]
         if len(scoped) == 1:
             resolved[acronym] = scoped[0]["phrase"]
     return resolved
@@ -376,6 +377,12 @@ def _make_committed_result(chunk_id: str, text: str, metadata: dict, owner: dict
     return result
 
 
+def _in_scope(key, scope):
+    if scope is None:
+        return True
+    return key in scope if isinstance(scope, (set, frozenset)) else key == scope
+
+
 def _dense_search(question: str, collection, count: int, candidate_count: int,
                   snapshot, document_id: str | None = None) -> list[dict]:
     if not snapshot.chunk_ids or candidate_count <= 0:
@@ -393,7 +400,7 @@ def _dense_search(question: str, collection, count: int, candidate_count: int,
         )
     allowed_ids = (
         {chunk_id for chunk_id, owner in snapshot.owners.items()
-         if owner["document_id"] == document_id}
+         if _in_scope(owner["document_id"], document_id)}
         if document_id is not None else snapshot.chunk_ids
     )
     target = min(candidate_count, len(allowed_ids))
@@ -406,7 +413,7 @@ def _dense_search(question: str, collection, count: int, candidate_count: int,
             include=["documents", "metadatas", "distances"],
         )
         if document_id is not None:
-            query_args["where"] = {"document_id": document_id}
+            query_args["where"] = {"document_id": {"$in": sorted(document_id)}} if isinstance(document_id, set) else {"document_id": document_id}
         results = collection.query(**query_args)
         hits = []
         for chunk_id, text, metadata, distance in zip(
@@ -444,7 +451,7 @@ def _bm25_search(question: str, collection, candidate_count: int, snapshot,
     matching = [
         i for i, tokens in enumerate(tokenized)
         if query_terms.intersection(tokens)
-        and (document_id is None or _paper_key(records[i]) == document_id)
+        and _in_scope(_paper_key(records[i]), document_id)
     ]
     ranked = sorted(matching, key=lambda i: (-float(scores[i]), records[i]["id"]))
     hits = []
@@ -583,7 +590,7 @@ def _overview_evidence(question: str, corpus: list[dict],
     by_paper: dict[str, list[dict]] = {}
     for result in corpus:
         key = _paper_key(result)
-        if document_id is None or key == document_id:
+        if _in_scope(key, document_id):
             by_paper.setdefault(key, []).append(result)
 
     if document_id is None and len(by_paper) > 1:
@@ -725,6 +732,19 @@ def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
     # Neighboring context is added after ALL anchors have been selected.
     return [{**anchor, "selection_reason": "anchor", "adjacent_to": None}
             for anchor in anchors]
+
+
+def _anchors_fit(question, anchors):
+    """Conservative whole-anchor accounting before optional context is expanded."""
+    from src.context_budget import generation_token_counter, positive_setting
+    from src.generate import SYSTEM_PROMPT, build_context, build_user_prompt
+    counter = generation_token_counter()
+    return (counter.count(build_context(anchors)) <= positive_setting("CONTEXT_BUDGET_TOKENS", 4000)
+            and counter.prompt_tokens(SYSTEM_PROMPT, build_user_prompt(question, anchors),
+                positive_setting("CONTEXT_FRAMING_RESERVE", 32))
+                + positive_setting("CONTEXT_ANSWER_RESERVE", 1024)
+                + _non_negative_int("CONTEXT_RETRY_RESERVE", 256)
+                <= positive_setting("CONTEXT_WINDOW_TOKENS", 8192))
 
 
 def expand_context(question: str, anchors: list[dict], corpus: list[dict], snapshot,
@@ -952,9 +972,18 @@ SELECTED_PAPER_NOT_INDEXED_MESSAGE = (
 
 def _retrieve_locked(question: str, top_k: int | None = None,
                      retrieval_mode: str | None = None,
-                     paper: str | None = None, *, debug: dict | None = None) -> list[dict]:
+                     paper: str | None = None, *, debug: dict | None = None,
+                     plan: RetrievalPlan | None = None) -> list[dict]:
     """Return ranked Chroma chunks with citation metadata and method scores."""
     config = RetrievalConfig.from_env()
+    plan = plan or infer_plan(question, (paper,) if paper else ())
+    if paper and plan.papers and tuple(plan.papers) != (paper,):
+        raise ValueError("paper and plan scope disagree")
+    policy = os.getenv("PAPER_CAP_POLICY", "baseline")
+    if policy not in {"baseline", "task-aware"}:
+        raise ValueError("PAPER_CAP_POLICY must be baseline or task-aware")
+    if policy == "task-aware" and (retrieval_mode or config.mode) != "hybrid-rerank":
+        raise ValueError("Task-aware policy requires relevance reranking")
     instruction = query_instruction(get_index_config().embedding_model)
     if debug is not None:
         debug.clear()
@@ -967,7 +996,7 @@ def _retrieve_locked(question: str, top_k: int | None = None,
     mode = retrieval_mode or config.mode
     if mode not in RETRIEVAL_MODES:
         raise ValueError(f"retrieval_mode must be one of: {', '.join(RETRIEVAL_MODES)}")
-    if paper is None and _THIS_PAPER.search(question):
+    if paper is None and not plan.papers and _THIS_PAPER.search(question):
         raise ValueError(random.choice(_THIS_PAPER_MESSAGES))
 
     collection = get_collection()
@@ -980,23 +1009,25 @@ def _retrieve_locked(question: str, top_k: int | None = None,
         return []
 
     document_id = None
-    if paper is not None:
-        document_ids = {
-            owner["document_id"] for owner in snapshot.owners.values()
-            if paper in owner.get("paths", [])
-        }
-        if len(document_ids) != 1:
-            raise ValueError(SELECTED_PAPER_NOT_INDEXED_MESSAGE)
-        document_id = document_ids.pop()
+    if paper is not None or plan.papers:
+        scoped = set()
+        for path in ((paper,) if paper else plan.papers):
+            ids = {owner["document_id"] for owner in snapshot.owners.values()
+                   if path in owner.get("paths", [])}
+            if len(ids) != 1:
+                raise ValueError(SELECTED_PAPER_NOT_INDEXED_MESSAGE)
+            scoped.update(ids)
+        document_id = next(iter(scoped)) if len(scoped) == 1 else scoped
 
     _, correction_corpus, tokenized = _get_bm25_index(collection, snapshot)
     if document_id is not None:
         tokenized = [tokens for result, tokens in zip(correction_corpus, tokenized)
-                     if _paper_key(result) == document_id]
+                     if _in_scope(_paper_key(result), document_id)]
     corrected = _correct_search_question(question, tokenized)
     terminology = (_get_terminology(collection, snapshot, correction_corpus, document_id)
                    if _enabled("QUERY_EXPANSION") else {})
-    queries = _search_queries(question, corrected, terminology)
+    queries = (_search_queries(question, corrected, terminology, subqueries=plan.subqueries)
+               if plan.subqueries else _search_queries(question, corrected, terminology))
     if len(queries) > 1:
         approved = []
         model, index_config = get_embedding_model(), get_index_config()
@@ -1035,7 +1066,7 @@ def _retrieve_locked(question: str, top_k: int | None = None,
                                                "bm25_budget": 0 if mode == "dense" else bm25_budgets[i]})
     fused = reciprocal_rank_fusion(*rankings, k=config.rrf_k, weights=weights)
     if debug is not None:
-        debug.update(variants=queries[1:], committed_revision=snapshot.revision,
+        debug.update(query_embedding_calls=sum(b > 0 for b in dense_budgets), variants=queries[1:], committed_revision=snapshot.revision,
                      fused_candidates=len(fused), reranked_candidates=0)
         debug["candidate_provenance"] = {
             hit["id"]: {"queries": hit.get("retrieval_queries", []),
@@ -1053,13 +1084,29 @@ def _retrieve_locked(question: str, top_k: int | None = None,
             original_hits = [hit for hit in fused if any(q["original"] for q in hit.get("retrieval_queries", []))]
             reserved = original_hits[:(config.rerank_candidates + 1) // 2]
             candidates = list({hit["id"]: hit for hit in reserved + candidates}.values())[:config.rerank_candidates]
+            if policy == "task-aware":
+                _, structural_corpus, _ = _get_bm25_index(collection, snapshot)
+                structural_corpus = [c for c in structural_corpus if _in_scope(_paper_key(c), document_id)]
+                structural = _overview_evidence(question, structural_corpus, document_id)
+                # Keep the original-query reservation and share the remaining allowance
+                # with structural overview candidates.
+                ordered = reserved + structural + candidates
+                candidates = list({c["id"]: c for c in ordered}.values())[:config.rerank_candidates]
+                structural_ids = {c["id"] for c in structural}
+                for c in candidates:
+                    if c.get("rrf_score") is None:
+                        c["rrf_score"] = 0.0
+                    if c["id"] in structural_ids and not c.get("retrieval_queries"):
+                        c["retrieval_queries"] = [{"query": question, "original": True,
+                            "method": "structural", "rank": None, "score": None}]
             reranked = _rerank(question, candidates, config.reranker_model)
             if debug is not None:
                 debug["reranked_candidates"] = len(candidates)
+                debug["reranker_calls"] = int(bool(candidates))
                 debug["reranked_scores"] = {hit["id"]: hit["reranker_score"] for hit in reranked}
             _, corpus, _ = _get_bm25_index(collection, snapshot)
             if document_id is not None:
-                corpus = [result for result in corpus if _paper_key(result) == document_id]
+                corpus = [result for result in corpus if _in_scope(_paper_key(result), document_id)]
             max_per_paper = config.max_chunks_per_paper
             results = _select_context(
                 reranked,
@@ -1074,7 +1121,7 @@ def _retrieve_locked(question: str, top_k: int | None = None,
             for item in overview:
                 item["retrieval_queries"] = [{"query": question, "original": True,
                                               "method": "structural", "rank": None, "score": None}]
-            if overview and not os.getenv("RELEVANCE_CALIBRATION", "").strip():
+            if overview and policy == "baseline" and not os.getenv("RELEVANCE_CALIBRATION", "").strip():
                 if _DIMENSION_LIST_QUESTION.search(question) and all(
                     item["selection_reason"] == "direct_list" for item in overview
                 ):
@@ -1095,11 +1142,30 @@ def _retrieve_locked(question: str, top_k: int | None = None,
                         paper_counts[key] = paper_counts.get(key, 0) + 1
                     results = focused
 
+    if mode == "hybrid-rerank":
+        threshold = reranked[0].get("score_contract", {}).get("effective_threshold", config.reranker_min_score) if reranked else config.reranker_min_score
+        if policy == "task-aware":
+            # Existing structural overview supplies candidates, never bypasses relevance.
+            relevant = sorted([c for c in reranked if c["reranker_score"] >= threshold],
+                              key=lambda c: (-c["reranker_score"], c["id"]))
+            if plan.papers:
+                requested_sources = {owner["document_id"]: path for path in plan.papers
+                                     for owner in snapshot.owners.values() if path in owner.get("paths", [])}
+                relevant = [{**c, "source": requested_sources.get(_paper_key(c), c["source"])}
+                            for c in relevant]
+            results = select_anchors(relevant, plan, top_k, config.max_chunks_per_paper,
+                                     _paper_key, debug, fits=lambda chosen: _anchors_fit(question, chosen))
+        if debug is not None:
+            debug["score_contract"] = reranked[0].get("score_contract", {}) if reranked else {}
+            debug["effective_threshold"] = threshold
+            debug["rejected_candidates"] = [{"id": c["id"], "score": c["reranker_score"],
+                                              "reason": "below_threshold"}
+                                             for c in reranked if c["reranker_score"] < threshold]
     counts = Counter()
     anchors = []
     for result in results:
         key = _paper_key(result)
-        if counts[key] < config.max_chunks_per_paper and len(anchors) < top_k:
+        if (policy == "task-aware" or counts[key] < config.max_chunks_per_paper) and len(anchors) < top_k:
             anchors.append({**result, "is_anchor": True, "anchor_rank": len(anchors) + 1})
             counts[key] += 1
     if debug is not None:
@@ -1109,6 +1175,9 @@ def _retrieve_locked(question: str, top_k: int | None = None,
                                      for hit in anchors]
     results = expand_context(question, anchors, correction_corpus, snapshot)
 
+    for result in results:
+        result["metadata"]["retrieval_scope"] = {"plan": asdict(plan), "mode": mode,
+            "anchor_budget": top_k, "committed_revision": snapshot.revision}
     if paper is not None:
         return [
             {**result, "source": paper,
@@ -1120,10 +1189,11 @@ def _retrieve_locked(question: str, top_k: int | None = None,
 
 def retrieve(question: str, top_k: int | None = None,
              retrieval_mode: str | None = None,
-             paper: str | None = None, *, debug: dict | None = None) -> list[dict]:
+             paper: str | None = None, *, debug: dict | None = None,
+                     plan: RetrievalPlan | None = None) -> list[dict]:
     """Search a consistent committed manifest snapshot in every retrieval mode."""
     from src.sync import INDEX_LOCK
 
     with INDEX_LOCK:
         return _retrieve_locked(question, top_k=top_k,
-                                retrieval_mode=retrieval_mode, paper=paper, debug=debug)
+                                retrieval_mode=retrieval_mode, paper=paper, debug=debug, plan=plan)
