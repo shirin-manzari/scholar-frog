@@ -62,3 +62,15 @@ def test_generation_metrics_track_citation_locator_and_abstention(dataset):
     assert metrics["abstention_correctness"] == 1.0
     assert metrics["citation_locator_precision"] == 1.0
     assert metrics["citation_valid_answer_rate"] == 1.0
+
+
+def test_anchor_page_recall_is_separate_from_expanded_context_page_recall(dataset):
+    def fake_retrieve(question, **kwargs):
+        return [{'id': 'group', 'source': 'paper.pdf', 'page': 2,
+                 'anchor_hits': [{'id': 'anchor', 'page': 1}],
+                 'metadata': {'context_usage': {'anchor_count': 1, 'evidence_tokens': 42}}}]
+    report = evaluate_dataset(dataset, retrieve_fn=fake_retrieve)
+    assert report['metrics']['anchor_page_recall'] == 0.0
+    assert report['metrics']['context_page_recall'] == 1.0
+    assert report['cases'][0]['selected_anchor_count'] == 1
+    assert report['cases'][0]['context_usage']['evidence_tokens'] == 42

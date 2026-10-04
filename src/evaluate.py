@@ -82,7 +82,7 @@ def evaluate_dataset(
         raise ValueError("top_k must be greater than zero")
     dataset = load_dataset(dataset_path)
     cases = []
-    retrieval_total = retrieval_hits = 0
+    retrieval_total = retrieval_hits = anchor_page_hits = 0
     retrieval_seconds = 0.0
     generation_total = generation_correct = 0
     generation_seconds = 0.0
@@ -102,7 +102,15 @@ def evaluate_dataset(
         elapsed = clock() - started
         retrieval_seconds += elapsed
         retrieval_hit = bool(expected) and any(_locator_matches(chunk, expected) for chunk in chunks)
+        anchor_locations = [
+            {"source": chunk.get("source"), "page": anchor["page"]}
+            for chunk in chunks for anchor in chunk.get("anchor_hits", [])
+        ]
+        if not any("anchor_hits" in chunk for chunk in chunks):
+            anchor_locations = chunks  # Compatibility with unexpanded providers.
+        anchor_page_hit = bool(expected) and any(_locator_matches(item, expected) for item in anchor_locations)
         if expected:
+            anchor_page_hits += anchor_page_hit
             retrieval_total += 1
             retrieval_hits += retrieval_hit
             if retrieval_hit:
@@ -115,6 +123,11 @@ def evaluate_dataset(
                 {"id": chunk.get("id"), "source": chunk.get("source"), "page": chunk.get("page")}
                 for chunk in chunks
             ],
+            "selected_anchor_count": len({anchor["id"] for chunk in chunks for anchor in chunk.get("anchor_hits", [])})
+                if any("anchor_hits" in chunk for chunk in chunks) else len(chunks),
+            "evidence_block_count": len(chunks),
+            "context_usage": chunks[0].get("metadata", {}).get("context_usage", {}) if chunks else {},
+            "anchor_page_hit": anchor_page_hit,
             "retrieval_hit": retrieval_hit, "retrieval_latency_ms": round(elapsed * 1000, 2),
         }
         if retrieval_error:
@@ -160,6 +173,8 @@ def evaluate_dataset(
     }
     metrics = {
         "retrieval_cases": retrieval_total,
+        "anchor_page_recall": _rate(anchor_page_hits, retrieval_total),
+        "context_page_recall": _rate(retrieval_hits, retrieval_total),
         f"retrieval_recall_at_{top_k}": _rate(retrieval_hits, retrieval_total),
         "mean_retrieval_latency_ms": round(retrieval_seconds * 1000 / len(cases), 2),
         "per_paper_coverage": paper_coverage,
@@ -181,6 +196,7 @@ def evaluate_dataset(
         })
     return {
         "dataset": dataset.get("name", Path(dataset_path).name), "dataset_version": dataset["version"],
+        "top_k_semantics": "maximum selected anchors; context page recall includes expansion",
         "top_k": top_k, "retrieval_mode": retrieval_mode or "environment default",
         "generation_included": include_generation, "metrics": metrics, "cases": cases,
     }
