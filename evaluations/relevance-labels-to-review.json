@@ -1,0 +1,246 @@
+{
+  "status": "unlabeled",
+  "snapshot_revision": "46a36a25a9dcb878f01a37616957cf9cfbe133bdbbbb608ef8f02b631051e8a8",
+  "examples": [
+    {
+      "query": "What proportion of Wikipedia editors does the bias survey report are male?",
+      "passage": "Two often disregarded aspects of a corpus are: (i) the demographics of its creators, and, (ii) who decides to use one (part of a) corpus rather than another. Both of these aspects can greatly affect the composition and distribution of the data and, therefore, the resulting behavior of a language model. Ideally, when choosing a textual dataset to work with, one should also make decisions about the demographic groups represented in the data [63] and about how including, excluding, over-representing or under-representing a demographic group could affect language models.",
+      "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+      "page": 5,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What proportion of Wikipedia editors does the bias survey report are male?",
+      "passage": "For example, including Wikipedia in the pre-training corpus of a language model is considered standard practice, but the demographics of Wikipedia editors are heavily unbalanced. According to Wikipedia itself, a disproportionate majority of its editors are males (87%), and in particular males in their mid-20s or retired males [124, 125]. Incidentally, the majority of the authors\u2014who also decide which (part of a) pre-training corpus to use in popular language model papers\u2014are also males. However, to the best of our knowledge, there is limited work investigating how the demographics of content creators affect the behavior of current systems based on pretrained language models.",
+      "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+      "page": 6,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What proportion of Wikipedia editors does the bias survey report are male?",
+      "passage": "> 5https://www.worlddata.info/languages/index.php.",
+      "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+      "page": 6,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What proportion of Wikipedia editors does the bias survey report are male?",
+      "passage": "reflect real-world statistics, e.g., only 3% of the editors whose primary language is English live in India. This significantly affects the contents of Wikipedia, as different people speak not only different languages but also embody different cultures, histories, and traditions; therefore, they value different topics with varying degrees of importance. It is true that, in several regions of the world, high-speed Internet connections have yet to see broader penetration, but this only highlights the importance of working with local people and experts [110, 123]. Furthermore, some of the knowledge that is not yet available in textual form might already be available under different modalities, e.g., voice recordings in dialects or endangered languages [88, 101] and pictures of cultural-specific items, scenes, and events [80], making multi-modal learning an interesting direction for mitigating biases in language models.",
+      "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+      "page": 7,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What does the Trustworthiness in RAG survey say TRC Bench covers and how many LLMs it evaluates?",
+      "passage": "- **Survey of existing work** : As shown in Figure 1, we involves a thorough review of the current literature and research efforts related to trustworthiness in RAG systems. We analyze various approaches, methodologies, and techniques that have been proposed or implemented to enhance trustworthiness across the six key dimensions.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 3,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What does the Trustworthiness in RAG survey say TRC Bench covers and how many LLMs it evaluates?",
+      "passage": "- **Benchmarking and assessment on various LLMs** : To provide a practical evaluation of trustworthiness in RAG systems, we introduce TRC Bench (Trust-RAG Compass Benchmark), a comprehensive benchmark covering six dimensions of trustworthiness. Using TRC Bench, we evaluate 19 LLMs, including both proprietary and open-source models with different model sizes and training strategies. The benchmark provides valuable insights into the trustworthiness performance of different models in real-world RAG applications. \n\nThe contributions of this survey are threefold: (1) We introduce a unified framework which defines six key dimensions of trustworthiness in RAG systems. (2) We present a detailed review for the existing literature on RAG trustworthiness, identifying gaps and highlighting promising approaches. (3) We establish a practical benchmark and make comprehensive evaluation for 19 LLMs, offering actionable insights and guidelines for improving trustworthiness in future RAG system developments.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 4,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What does the Trustworthiness in RAG survey say TRC Bench covers and how many LLMs it evaluates?",
+      "passage": "# **4.2 Evaluation Results and Analysis** \n\nIn this section, we evaluate the trustworthiness of various LLMs in RAG scenarios. We consider a diverse set of models, including both open-source and proprietary systems, covering different model families, scales, and alignment strategies. \n\n_4.2.1 Models._ We evaluate a total of 19 LLMs, consisting of 11 open-source models and 8 proprietary models. \n\n**Open-source models** include multiple variants from the Qwen and Ministral families: Qwen3.54B-base, Qwen3.5-9B-base, Qwen3.5-4B, Qwen3.5-9B, Qwen3.5-27B, as well as Ministral-3B-base, Ministral-8B-base, Ministral-14B-base, Ministral-3B-Instruct, Ministral-8B-Instruct, and Ministral14B-Instruct. These models vary in scale and instruction-tuning strategies, enabling us to analyze how model size and alignment affect trustworthiness. **Proprietary models** include recent advanced",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 27,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What does the Trustworthiness in RAG survey say TRC Bench covers and how many LLMs it evaluates?",
+      "passage": "Table 9. Overall performance of different LLMs in RAG settings across six trustworthiness dimensions, including factuality, robustness, fairness, transparency, accountability, and privacy. The transparency score reports recall, measuring the coverage of key reasoning facts in model responses. Darker teal shades indicate better performance, and the best result in each column is highlighted in bold.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 28,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What main stages does the Trustworthiness in RAG survey describe for a complete RAG system?",
+      "passage": "# **3 Trustworthy RAG System** \n\nA complete RAG system involves three main stages: the injection of external knowledge into the generator, the generation of answers by the generator, and the evaluation of the generated answers. Each of these stages presents challenges related to trustworthiness. During the external knowledge injection phase, there is a risk of injecting noisy or private information. In the answer generation phase, the introduction of external knowledge may lead to biased reasoning and compromise the alignment achieved through RLHF. Finally, during the answer evaluation phase, the generated answers may contain factual errors or lack sufficient grounding in the external knowledge. \n\nAs illustrated in Figure 2, we identify six essential dimensions of trustworthiness in a RAG system: **Robustness** , **Fairness** , **Factuality** , **Privacy** , **Transparency** , and **Accountability** . For each of these dimensions, we will explore the following aspects: a general definition applicable to LLMs, a specific definition within the RAG context, and a thorough literature review. To provide a clearer categorization and summary of the relevant research, we first present a timeline of these studies in Figure 3 to identify trends in the field. The following sections will delve into each dimension of trustworthiness in greater detail.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 6,
+      "split": "held_out",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What main stages does the Trustworthiness in RAG survey describe for a complete RAG system?",
+      "passage": "Researchers have proposed various attack methods to demonstrate the vulnerability of RAG systems to leaking private retrieval database information [26, 170]. They found that even under black-box attack scenarios, attackers could effectively extract information from RAG system\u2019s retrieval databases by crafting specific prompts [117]. These attacks not only reveal the privacy protection flaws in RAG systems but also highlight the need for considering privacy protection measures when designing and deploying RAG systems [61]. Therefore, we will delve into the attacks and defences of the privacy of RAG systems, as well as assessments of existing methods.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 22,
+      "split": "held_out",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What main stages does the Trustworthiness in RAG survey describe for a complete RAG system?",
+      "passage": "_3.6.3 Representative Studies._ Research on privacy in RAG systems can be broadly organized into three stages: data extraction attacks, inference attacks, and privacy-preserving defenses. We categorize each study according to three criteria: the dimension of trustworthiness, method type, and research object, as summarized in Table 8. \n\nTable 8. Comparisons of representative RAG methods for privacy, categorized by trustworthiness stage, method type, and object.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 23,
+      "split": "held_out",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "How does IPI affect retrieved documents in the Trustworthiness in RAG survey?",
+      "passage": "_3.4.2 Transparency in RAG Systems._ **Retrieval Transparency.** Improving transparency of the retrieval process involves investigating how the retrieval component selects relevant documents or passages from a large corpus. This includes understanding the indexing and ranking algorithms, and the criteria used for selecting the most relevant information. Besides, analyzing the scoring mechanisms that determine the relevance of retrieved documents also improves transparency. This involves studying the algorithms and heuristics that assign relevance scores to different pieces of text.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 18,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "How does IPI affect retrieved documents in the Trustworthiness in RAG survey?",
+      "passage": "**Information Integration Transparency.** Improving transparency of information integration requires understanding how the retrieved information is integrated into the answer-generation process. This includes examining techniques like concatenation, attention mechanisms, or other fusion strategies that combine retrieved text with original inputs. Transparency of information integration also includes studying how the inclusion of retrieved information affects the generated output. This involves assessing the influence of different types of retrieved documents on the quality, accuracy, and coherence of the generated text. Creating tools to trace back the generated content to specific retrieved documents or passages, also provides a clear lineage of the information used in the generation process. \n\n_3.4.3 Representative Studies._ We categorize each study according to three criteria: the dimension of trustworthiness, method type, and research object, as summarized in Table 6. Zhou et al. [193] in- \n\nTable 6. Comparisons of representative RAG methods for transparency, categorized by trustworthiness stage, method type, and object. \n\n|**Mdl**|**Stag**|**es of Trustwo**|**rthiness**||**Method T**|**ype**|**Obj**|**ect**|\n|---|---|---|---|---|---|---|---|---|\n|**oe**|**Input**|**Generation**|**Checking**|**Attack**|**Defense**|**Evaluation**|**Generator**|**Retriever**|\n|MetaRAG [193]|-|\u2713|-|-|\u2713|-|\u2713|-|\n|RAG-Ex [139]|-|\u2713|-|-|\u2713|-|\u2713|-|\n|RAGBench [43]|-|\u2713|-|-|-|\u2713|\u2713|-|",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 19,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "How does IPI affect retrieved documents in the Trustworthiness in RAG survey?",
+      "passage": "RAG systems integrate external information retrieval mechanisms to ensure that generated content is based on factual data, thus improving the accuracy and credibility of LLM outputs [21]. \n\nThe trustworthiness of LLMs has become a critical concern as these systems are increasingly integrated into applications such as financial systems [184] and healthcare [45]. Trustworthiness, as outlined in various frameworks, is evaluated across multiple key dimensions, including truthfulness, safety, fairness, robustness, privacy, machine ethics, transparency, and accountability [155]. These dimensions ensure that LLMs provide accurate, unbiased, and safe outputs while protecting user privacy and aligning with ethical standards. Techniques like reinforcement learning from human feedback (RLHF)[125], data filtering[10], and adversarial training [196] have been employed to improve trustworthiness, with proprietary models such as GPT-4 generally outperforming opensource alternatives in certain high-stakes applications. As LLMs continue to influence key societal functions, ongoing research and transparent, collaborative efforts between academia and industry are essential to ensure their reliable and ethical deployment [142].",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 3,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "Why is RLHF used to improve trustworthiness in the RAG survey?",
+      "passage": "language translation [104], thereby transforming machine interpretation and generation of human language. \n\nDespite these advancements, LLMs face the persistent challenge of hallucination, where models produce plausible but incorrect or nonsensical information [8, 138]. Hallucinations arise from factors such as biases in training data[88] and the probabilistic nature of language models[181]. This issue is critical in contexts requiring high precision and reliability, such as medical and legal applications [107]. To mitigate this, Retrieval-Augmented Generation (RAG) systems have been developed [129]. RAG systems integrate external information retrieval mechanisms to ensure that generated content is based on factual data, thus improving the accuracy and credibility of LLM outputs [21]. \n\nThe trustworthiness of LLMs has become a critical concern as these systems are increasingly integrated into applications such as financial systems [184] and healthcare [45]. Trustworthiness, as outlined in various frameworks, is evaluated across multiple key dimensions, including truthfulness, safety, fairness, robustness, privacy, machine ethics, transparency, and accountability [155]. These dimensions ensure that LLMs provide accurate, unbiased, and safe outputs while protecting user privacy and aligning with ethical standards. Techniques like reinforcement learning from human feedback (RLHF)[125], data filtering[10], and adversarial training [196] have been employed to improve trustworthiness, with proprietary models such as GPT-4 generally outperforming opensource alternatives in certain high-stakes applications. As LLMs continue to influence key societal functions, ongoing research and transparent, collaborative efforts between academia and industry are essential to ensure their reliable and ethical deployment [142].",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 3,
+      "split": "held_out",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "Why is RLHF used to improve trustworthiness in the RAG survey?",
+      "passage": "# **3 Trustworthy RAG System** \n\nA complete RAG system involves three main stages: the injection of external knowledge into the generator, the generation of answers by the generator, and the evaluation of the generated answers. Each of these stages presents challenges related to trustworthiness. During the external knowledge injection phase, there is a risk of injecting noisy or private information. In the answer generation phase, the introduction of external knowledge may lead to biased reasoning and compromise the alignment achieved through RLHF. Finally, during the answer evaluation phase, the generated answers may contain factual errors or lack sufficient grounding in the external knowledge. \n\nAs illustrated in Figure 2, we identify six essential dimensions of trustworthiness in a RAG system: **Robustness** , **Fairness** , **Factuality** , **Privacy** , **Transparency** , and **Accountability** . For each of these dimensions, we will explore the following aspects: a general definition applicable to LLMs, a specific definition within the RAG context, and a thorough literature review. To provide a clearer categorization and summary of the relevant research, we first present a timeline of these studies in Figure 3 to identify trends in the field. The following sections will delve into each dimension of trustworthiness in greater detail.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 6,
+      "split": "held_out",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What do membership inference attacks reveal about the retrieval database?",
+      "passage": "|**Mdl**|**Stag**|**es of Trustwo**|**rthiness**||**Method T**|**ype**|**Obj**|**ect**|\n|---|---|---|---|---|---|---|---|---|\n|**oe**|**Input**|**Generation**|**Checking**|**Attack**|**Defense**|**Evaluation**|**Generator**|**Retriever**|\n|Neural exec [110]|\u2713|-|-|\u2713|-|-|\u2713|-|\n|Private-RAG[163]|\u2713|-|-|\u2713|-|-|\u2713|\u2713|\n|_\ud835\udc5d_<sup>2</sup>RAG [100]|\u2713|-|-|\u2713|-|-|\u2713|\u2713|\n|Private-aware RAG [188]|\u2713|-|-|\u2713|-|-|\u2713|\u2713|\n|Huang et al. [62]|\u2713|-|-|\u2713|-|-|-|\u2713|\n|Zeng et al. [178]|\u2713|-|-|\u2713|\u2713|-|-|\u2713|\n|Anderson et al. [4]|\u2713|-|-|\u2713|-|-|\u2713|-|\n|SAGE[177]|\u2713|-|-|-|\u2713|-|\u2713|-|\n|EPEAgent[130]|\u2713|-|-|-|\u2713|-|\u2713|\u2713|\n|Synapse[15]|\u2713|-|-|-|\u2713|-|\u2713|\u2713|\n|AgentNet[172]|\u2713|-|-|-|\u2713|-|\u2713|\u2713|\n\n\n\n_Data Extraction Attacks._ Early work demonstrates that RAG systems are highly vulnerable to direct data extraction. Qi et al. [117] demonstrate that attackers can exploit prompt injection to extract sensitive information from the retrieval database, even under black-box access. Similarly, Neural Exec [110] automates the generation of adversarial triggers, enabling more flexible and scalable extraction attacks that bypass rule-based defenses. These studies reveal that RAG systems may directly expose private data due to their reliance on explicit retrieval. \n\n_Inference Attacks._ Beyond direct leakage, attackers can infer private information from model outputs. Membership Inference Attacks (MIA) [4] show that attackers can determine whether a specific document exists in the retrieval database by analyzing model responses. This type of attack does not require explicit data exposure but still compromises privacy. \n\n_Retrieval-induced Privacy Risks._ Recent work highlights that the retrieval mechanism itself can amplify privacy risks. [178] shows that carefully designed prompts can guide the retriever to expose target information, effectively turning retrieval into a leakage channel. These findings indicate that even when generation is controlled, retrieval can still reveal sensitive content. Huang et al. [62] present one of the first systematic studies on privacy risks in retrieval-based language models, particularly kNN-LMs. Their findings indicate that kNN-LMs are more susceptible to leaking sensitive information from their external datastore compared to purely parametric models.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 23,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What do membership inference attacks reveal about the retrieval database?",
+      "passage": "- [3] Rishabh Agrawal, Murtaza Asrani, Hadi Youssef, and Apurva Narayan. 2025. Scmrag: Self-corrective multihop retrieval augmented generation system for llm agents. In _Proceedings of the 24th International Conference on Autonomous Agents and Multiagent Systems_ . 50\u201358. \n\n- [4] Maya Anderson, Guy Amit, and Abigail Goldsteen. 2024. Is My Data in Your Retrieval Database? Membership Inference Attacks Against Retrieval Augmented Generation. _arXiv preprint arXiv:2405.20446_ (2024). \n\n- [5] Akari Asai, Zeqiu Wu, Yizhong Wang, Avirup Sil, and Hannaneh Hajishirzi. 2024. Self-RAG: Learning to Retrieve, Generate, and Critique through Self-Reflection. (2024). \n\n- [6] Rumaisa Azeem, Andrew Hundt, Masoumeh Mansouri, and Martim Brand\u00e3o. 2024. LLM-Driven Robots Risk Enacting Discrimination, Violence, and Unlawful Actions. _arXiv preprint arXiv:2406.08824_ (2024). \n\n- [7] Gaurav Bagwe, Saket Sanjeev Chaturvedi, Xiaolong Ma, Xiaoyong Yuan, Kuang-Ching Wang, and Lan Emily Zhang. 2025. Your RAG is Unfair: Exposing Fairness Vulnerabilities in Retrieval-Augmented Generation via Backdoor Attacks. In _Proceedings of the 2025 Conference on Empirical Methods in Natural Language Processing_ . 15930\u201315948.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 34,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "Does the bias survey say Wikipedia editors are not predominantly male, despite reporting 87%?",
+      "passage": "Two often disregarded aspects of a corpus are: (i) the demographics of its creators, and, (ii) who decides to use one (part of a) corpus rather than another. Both of these aspects can greatly affect the composition and distribution of the data and, therefore, the resulting behavior of a language model. Ideally, when choosing a textual dataset to work with, one should also make decisions about the demographic groups represented in the data [63] and about how including, excluding, over-representing or under-representing a demographic group could affect language models.",
+      "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+      "page": 5,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "Does the bias survey say Wikipedia editors are not predominantly male, despite reporting 87%?",
+      "passage": "For example, including Wikipedia in the pre-training corpus of a language model is considered standard practice, but the demographics of Wikipedia editors are heavily unbalanced. According to Wikipedia itself, a disproportionate majority of its editors are males (87%), and in particular males in their mid-20s or retired males [124, 125]. Incidentally, the majority of the authors\u2014who also decide which (part of a) pre-training corpus to use in popular language model papers\u2014are also males. However, to the best of our knowledge, there is limited work investigating how the demographics of content creators affect the behavior of current systems based on pretrained language models.",
+      "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+      "page": 6,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "Does the bias survey say Wikipedia editors are not predominantly male, despite reporting 87%?",
+      "passage": "> 4 [104], LaMDA [117], and LLaMA [119], here, we will also call million-parameter models LLMs.",
+      "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+      "page": 3,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "Does the bias survey say Wikipedia editors are not predominantly male, despite reporting 87%?",
+      "passage": "Fig. 1. Distribution of the domains of the articles in the English (left) and Italian (right) Wikipedias. The domains are abbreviated labels from BabelNet 5 (https://babelnet.org/how-to-use). Both domain distributions are significantly skewed toward domains such as _Sports_ , _Music_ , _Places_ , _Media_ , and _Politics_ . \n\ndomain labels is similar across two high-resource languages,<sup>4</sup> as is readily apparent by comparing the English domain distribution in Figure 1(a) to the Italian one in Figure 1(b). On the one hand, this comparison provides empirical evidence that the skewness of the distribution is not an artifact of the English Wikipedia. On the other hand, it also provides an indication of the biases that a language model may inherit by using Wikipedia as a training corpus, i.e., the knowledge encoded by a language model trained on Wikipedia is skewed toward sports, music, and locations. Not only that, among sports entities, the predictions of a language model will be biased and will favor entities that appear in Wikipedia over entities that do not (e.g., a new sports star). For example, some sports have historically been male-dominated, meaning that the majority of their popular players have also been male. It is perhaps to be expected, then, that Wikipedia should feature more entries about male sports players. However, we may not want to deploy a language model with such strong biases.",
+      "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+      "page": 4,
+      "split": "calibration",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What do these papers report about RAG accuracy at a dose of 20 mg/L in 2025?",
+      "passage": "- [76] Siwon Kim, Sangdoo Yun, Hwaran Lee, Martin Gubri, Sungroh Yoon, and Seong Joon Oh. 2023. ProPILE: Probing Privacy Leakage in Large Language Models. In _NeurIPS_ . \n\n- [77] Sun Hye Kim and Fani Boukouvala. 2020. Machine learning-based surrogate modeling for data-driven optimization: a comparison of subset selection for regression techniques. _Optimization Letters_ 14, 4 (2020), 989\u20131010. \n\n- [78] Satyapriya Krishna, Kalpesh Krishna, Anhad Mohananey, Steven Schwarcz, Adam Stambler, Shyam Upadhyay, and Manaal Faruqui. 2025. Fact, fetch, and reason: A unified evaluation of retrieval-augmented generation. In _Proceedings of the 2025 Conference of the Nations of the Americas Chapter of the Association for Computational Linguistics: Human Language Technologies (Volume 1: Long Papers)_ . 4745\u20134759. \n\n- [79] Aounon Kumar, Chirag Agarwal, Suraj Srinivas, Soheil Feizi, and Hima Lakkaraju. 2023. Certifying llm safety against adversarial prompting. _arXiv preprint arXiv:2309.02705_ (2023). \n\n- [80] Jooyoung Lee, Thai Le, Jinghui Chen, and Dongwon Lee. 2023. Do Language Models Plagiarize?. In _WWW_ . ACM, 3637\u20133647. \n\n- [81] Minwoo Lee, Seungpil Won, Juae Kim, Hwanhee Lee, Cheoneum Park, and Kyomin Jung. 2021. Crossaug: A contrastive data augmentation method for debiasing fact verification models. In _Proceedings of the 30th ACM International Conference on Information & Knowledge Management_ . 3181\u20133185.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 37,
+      "split": "held_out",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    },
+    {
+      "query": "What do these papers report about RAG accuracy at a dose of 20 mg/L in 2025?",
+      "passage": "Fig. 3. Timeline of studies in trustworthy RAG across Factuality, Robustness, Fairness, Transparency, Accountability, Privacy, including representative studies across various dimensions up until March 2026. \n\nSCMRAG[3] pushes adaptive search toward self-corrective multihop reasoning by constructing a dynamic, LLM-assisted knowledge graph and allowing an internal reasoning agent to determine whether additional information is needed; when gaps are detected, the system autonomously issues corrective retrieval to external sources, which helps reduce hallucinations and retrieval errors. In Retrieval-Augmented Generation with Conflicting Evidence, MADAM-RAG[157] handles ambiguous queries, misinformation, and noisy documents jointly through multi-agent debate and aggregation, showing that agentic coordination can better separate valid answers from misleading evidence in realistic conflicting-settings. Finally, SAFE[59] for long-form COVID-19 fact-checking adopts an agentic extraction-verification pipeline: one agent extracts claims from lengthy articles, while another verifies them using LOTR-RAG[59] over a large COVID-19 corpus; the study reports improved consistency, usefulness, clearness, and authenticity over baseline LLMs. \n\nOverall, these works indicate that adaptive search agents are becoming an important direction for factuality-oriented RAG, because they explicitly reinforce the synergy between internal knowledge and external evidence and make retrieval itself part of the reasoning loop.",
+      "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+      "page": 10,
+      "split": "held_out",
+      "kind": null,
+      "relevant": null,
+      "annotator": null
+    }
+  ]
+}
