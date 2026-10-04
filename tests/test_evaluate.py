@@ -103,3 +103,43 @@ def test_anchor_mrr_uses_anchor_rank_not_context_block_order(dataset):
     assert report['metrics']['anchor_locator_mrr'] == .3333
     assert report['metrics']['negative_evidence_blocks'] == 1
     assert report['cases'][0]['retrieved'][0]['text'] == 'Reviewed excerpt'
+
+
+def test_paper_coverage_does_not_credit_unretrieved_paper(tmp_path):
+    path = tmp_path / 'papers.json'
+    path.write_text(json.dumps({'version': 1, 'cases': [{'id': 'compare', 'question': 'Compare',
+        'expected': 'answered', 'evidence': [{'source': 'a.pdf', 'page': 1}, {'source': 'b.pdf', 'page': 1}]}]}))
+    result = evaluate_dataset(path, retrieve_fn=lambda *a, **kw: [{'source': 'a.pdf', 'page': 1}])
+    assert result['metrics']['per_paper_coverage']['a.pdf']['recall'] == 1
+    assert result['metrics']['per_paper_coverage']['b.pdf']['recall'] == 0
+    assert result['metrics']['anchor_locator_recall'] == .5
+
+
+def test_answered_status_does_not_establish_factual_accuracy(dataset):
+    validation = CitationValidation(True, [], [], [], [])
+    result = evaluate_dataset(dataset, include_generation=True, retrieve_fn=lambda *a, **kw: [],
+        generate_fn=lambda *a: GenerationResult('Plausible.', '', [], validation, 0))
+    assert result['metrics']['human_factual_accuracy'] is None
+    assert result['metrics']['supported_answer_rate'] == 0
+
+
+def test_retrieval_failures_are_reported_without_excluding_expected_cases(dataset):
+    def provider(question, **kwargs):
+        if question == 'Supported?':
+            raise ValueError('Context budget exhausted')
+        return []
+    report = evaluate_dataset(dataset, retrieve_fn=provider)
+    assert report['metrics']['retrieval_failures'] == 1
+    assert report['metrics']['anchor_locator_recall'] == 0
+    assert report['metrics']['retrieval_cases'] == 1
+    assert report['cases'][0]['retrieval_error'] == 'Context budget exhausted'
+
+
+def test_blocked_answer_citations_do_not_count_as_shown_answer_quality(dataset):
+    evidence = Evidence('E1', 'correct', 'hash', 'Paper', 'paper.pdf', 2, 'Support')
+    validation = CitationValidation(True, ['E1'], [], [], [evidence], semantic_support='failed')
+    report = evaluate_dataset(dataset, include_generation=True, retrieve_fn=lambda *a, **kw: [],
+        generate_fn=lambda *a: GenerationResult('Blocked.', '', [evidence], validation, 0,
+                                                status=GenerationStatus.VALIDATION_FAILED))
+    assert report['metrics']['citation_locator_precision'] is None
+    assert report['metrics']['supported_answer_rate'] == 0

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+import hashlib
+import os
 import time
 from dataclasses import asdict
 from collections import defaultdict
@@ -61,7 +63,10 @@ def load_dataset(path: str | Path) -> dict:
 def _locator_matches(item, expected: list[dict]) -> bool:
     source = getattr(item, "source", None) if not isinstance(item, dict) else item.get("source")
     page = getattr(item, "page", None) if not isinstance(item, dict) else item.get("page")
-    return any(source == locator["source"] and page == locator["page"] for locator in expected)
+    return any(source == locator["source"] and page == locator["page"]
+               and (not locator.get("id") or (item.get("id") if isinstance(item, dict) else item.chunk_id) == locator["id"])
+               and (not locator.get("text_contains") or locator["text_contains"] in (item.get("text", "") if isinstance(item, dict) else item.text))
+               for locator in expected)
 
 
 def _rate(numerator: int, denominator: int) -> float | None:
@@ -94,6 +99,8 @@ def evaluate_dataset(
     reciprocal_ranks = []
     anchor_reciprocal_ranks = []
     labeled_blocks = unmatched_blocks = 0
+    locator_expected = locator_found = anchor_total = anchor_correct = 0
+    dimension_coverage = defaultdict(lambda: {"expected": 0, "retrieved": 0})
 
     for case in dataset["cases"]:
         expected = case.get("evidence", [])
@@ -105,6 +112,11 @@ def evaluate_dataset(
             kwargs = {"top_k": top_k, "retrieval_mode": retrieval_mode}
             if retrieve_fn is retrieve:
                 kwargs["debug"] = query_debug
+            if case.get("paper"):
+                kwargs["paper"] = case["paper"]
+            if case.get("plan"):
+                from src.evidence_policy import RetrievalPlan
+                kwargs["plan"] = RetrievalPlan(**case["plan"])
             chunks = retrieve_fn(case["question"], **kwargs)
             retrieval_error = None
         except Exception as exc:  # Record a failed case while preserving the rest of a benchmark run.
@@ -113,11 +125,20 @@ def evaluate_dataset(
         retrieval_seconds += elapsed
         retrieval_hit = bool(expected) and any(_locator_matches(chunk, expected) for chunk in chunks)
         anchor_locations = [
-            {"source": chunk.get("source"), "page": anchor["page"], "rank": anchor.get("rank", 1)}
+            {"id": anchor["id"], "text": anchor.get("text", ""), "source": chunk.get("source"), "page": anchor["page"], "rank": anchor.get("rank", 1)}
             for chunk in chunks for anchor in chunk.get("anchor_hits", [])
         ]
         if not any("anchor_hits" in chunk for chunk in chunks):
             anchor_locations = chunks  # Compatibility with unexpanded providers.
+        anchor_total += len(anchor_locations)
+        anchor_correct += sum(_locator_matches(item, expected) for item in anchor_locations)
+        locator_expected += len(expected)
+        locator_found += sum(any(_locator_matches(item, [loc]) for item in anchor_locations) for loc in expected)
+        for loc in expected:
+            if loc.get("dimension"):
+                key = loc["source"] + " / " + loc["dimension"]
+                dimension_coverage[key]["expected"] += 1
+                dimension_coverage[key]["retrieved"] += any(_locator_matches(item, [loc]) for item in anchor_locations)
         anchor_page_hit = bool(expected) and any(_locator_matches(item, expected) for item in anchor_locations)
         if expected:
             anchor_reciprocal_ranks.append(max(
@@ -131,8 +152,8 @@ def evaluate_dataset(
             anchor_page_hits += anchor_page_hit
             retrieval_total += 1
             retrieval_hits += retrieval_hit
-            if retrieval_hit:
-                for source in {item["source"] for item in expected}:
+            for source in {item["source"] for item in expected}:
+                if any(_locator_matches(chunk, [loc for loc in expected if loc["source"] == source]) for chunk in chunks):
                     per_paper[source]["retrieval_hits"] += 1
 
         result = {
@@ -168,7 +189,8 @@ def evaluate_dataset(
                 actual = generated.status.value
                 outcome_correct = actual == case["expected"]
                 generation_correct += outcome_correct
-                evidence = generated.validation.valid_evidence
+                evidence = (generated.validation.valid_evidence
+                            if generated.status is GenerationStatus.ANSWERED else [])
                 citation_total += len(evidence)
                 citation_correct += sum(_locator_matches(item, expected) for item in evidence)
                 citation_valid_answers += int(
@@ -176,6 +198,17 @@ def evaluate_dataset(
                     and generated.validation.references_valid
                 )
                 result.update({
+                    "generated_answer": generated.answer if generated.status is GenerationStatus.ANSWERED else "",
+                    "answer_sha256": hashlib.sha256(generated.answer.encode()).hexdigest(),
+                    "semantic_support": generated.validation.semantic_support,
+                    "semantic_verdicts": generated.validation.semantic_verdicts,
+                    "validation_errors": generated.validation.errors,
+                    "model_calls": generated.debug.get("model_calls"),
+                    "recovery": generated.debug,
+                    "supported_answer": (generated.status is GenerationStatus.ANSWERED
+                        and generated.validation.references_valid
+                        and generated.validation.semantic_support == "passed"),
+                    "human_answer_correct": (case.get("answer_review", {}).get("correct") if case.get("answer_review", {}).get("answer_sha256") == hashlib.sha256(generated.answer.encode()).hexdigest() else None),
                     "actual": actual, "outcome_correct": outcome_correct,
                     "citation_references_valid": generated.validation.references_valid,
                     "cited_evidence": [
@@ -194,6 +227,22 @@ def evaluate_dataset(
     }
     metrics = {
         "retrieval_cases": retrieval_total,
+        "retrieval_failures": sum(bool(c.get("retrieval_error")) for c in cases),
+        "generation_failures": sum(bool(c.get("generation_error")) for c in cases),
+        "reranker_calls": sum(c['query_processing'].get('reranker_calls', 0) + c.get('recovery', {}).get('retrieval', {}).get('reranker_calls', 0) for c in cases),
+        "query_embedding_calls": sum(c['query_processing'].get('query_embedding_calls', 0) + c.get('recovery', {}).get('retrieval', {}).get('query_embedding_calls', 0) for c in cases),
+        "total_model_calls": sum((c.get('model_calls') or 0)
+            + c['query_processing'].get('reranker_calls', 0)
+            + c['query_processing'].get('query_embedding_calls', 0)
+            + c.get('recovery', {}).get('retrieval', {}).get('reranker_calls', 0)
+            + c.get('recovery', {}).get('retrieval', {}).get('query_embedding_calls', 0)
+            for c in cases),
+        "anchor_locator_precision": _rate(anchor_correct, anchor_total),
+        "anchor_locator_recall": _rate(locator_found, locator_expected),
+        "retrieval_precision": None,
+        "retrieval_recall": None,
+        "relevance_metric_limitation": "Source/page locators are coarse proxies, not complete manually labeled passage relevance. Use relevance calibration for precision/recall.",
+        "per_dimension_coverage": {key: {**value, "recall": _rate(value["retrieved"], value["expected"])} for key, value in dimension_coverage.items()},
         "anchor_page_recall": _rate(anchor_page_hits, retrieval_total),
         "context_page_recall": _rate(retrieval_hits, retrieval_total),
         f"retrieval_recall_at_{top_k}": _rate(retrieval_hits, retrieval_total),
@@ -208,6 +257,16 @@ def evaluate_dataset(
     if include_generation:
         metrics.update({
             "generation_cases": generation_total,
+            "supported_answer_rate": _rate(sum(c.get("supported_answer", False) for c in cases if c["expected"] == "answered"), sum(c["expected"] == "answered" for c in cases)),
+            "human_factual_accuracy": _rate(sum(c.get("human_answer_correct") is True for c in cases), sum(type(c.get("human_answer_correct")) is bool for c in cases)),
+            "answer_quality_limitation": "Answered status measures response format only; semantic support is verifier-assessed, factual accuracy requires blind human review per configuration.",
+            "false_abstentions": sum(c.get("actual") == "abstained" for c in cases if c["expected"] == "answered"),
+            "false_answers": sum(c.get("actual") == "answered" for c in cases if c["expected"] == "abstained"),
+            "model_calls": sum(c.get("model_calls") or 0 for c in cases),
+            "recovery_attempts": sum(c.get("recovery", {}).get("recovery_rounds", 0) for c in cases),
+            "recovery_success_rate": _rate(sum(c.get("recovery", {}).get("recovery_success", False) for c in cases), sum(c.get("recovery", {}).get("recovery_rounds", 0) for c in cases)),
+            "recovery_gap_resolution_rate": None,
+            "recovery_success_definition": "New evidence cited in a semantically supported answer; gap resolution requires human review",
             "generation_outcome_accuracy": _rate(generation_correct, generation_total),
             "abstention_correctness": _rate(
                 sum(case.get("outcome_correct", False) for case in cases if case["expected"] == "abstained"),
@@ -235,6 +294,17 @@ def evaluate_dataset(
         "effective_settings": {"retrieval": {**asdict(retrieval_config), "mode": retrieval_mode or retrieval_config.mode},
                                "index": index_config.canonical(),
                                "context": context_settings,
+                               "score_contracts": [c["query_processing"].get("score_contract") for c in cases if c["query_processing"].get("score_contract")],
+                               "paper_cap_policy": os.getenv('PAPER_CAP_POLICY', 'baseline'),
+                               "evidence_recovery": _enabled('EVIDENCE_RECOVERY'),
+                               "calibration_artifact": os.getenv('RELEVANCE_CALIBRATION', ''),
+                               "generation": {
+                                   "backend": os.getenv('LLM_BACKEND', 'ollama'),
+                                   "model": os.getenv(os.getenv('LLM_BACKEND', 'ollama').upper() + '_MODEL',
+                                       {'ollama': 'qwen3:8b', 'openai': 'gpt-4o-mini', 'anthropic': 'claude-haiku-4-5-20251001'}.get(os.getenv('LLM_BACKEND', 'ollama'), '')),
+                                   "semantic_validation": _enabled('CITATION_SEMANTIC_VALIDATION', 'true'),
+                                   "max_generation_retries": _non_negative_int('CITATION_MAX_RETRIES', 1),
+                                   "total_llm_call_budget": int(os.getenv('GENERATION_TOTAL_CALLS', str(2 * (_non_negative_int('CITATION_MAX_RETRIES', 1) + 1) + 2)))},
                                "query_instruction": query_instruction(index_config.embedding_model),
                                "query_expansion": _enabled("QUERY_EXPANSION"),
                                "query_max_variants": min(_non_negative_int("QUERY_MAX_VARIANTS", 2), 2)},
