@@ -488,29 +488,25 @@ function renderAnswer(data, bubble, turn) {
           ? ` · extracted characters ${item.character_start}–${item.character_end}`
           : "";
       const excerpt = document.createElement("p");
-      const excerptText = plainDisplayText(item.text);
-      const publicationLine =
-        ", Vol. 1, No. 1, Article . Publication date: May 2018.";
-      const publicationStart = excerptText.indexOf(publicationLine);
-      if (publicationStart < 0) {
-        excerpt.textContent = excerptText;
-      } else {
-        const publication = document.createElement("em");
-        publication.textContent = publicationLine;
-        excerpt.append(
-          excerptText.slice(0, publicationStart),
-          publication,
-          excerptText.slice(publicationStart + publicationLine.length),
-        );
-      }
+      excerpt.textContent = item.display_text ?? plainDisplayText(item.text);
+      card.append(summary, excerpt);
+      // The preview is display-only. Offsets describe the canonical evidence
+      // supplied to generation, shown here without rewriting its contents.
+      const exact = document.createElement("details");
+      exact.className = "exact-evidence";
+      const exactSummary = document.createElement("summary");
+      exactSummary.textContent = "Exact supplied evidence";
+      exact.append(exactSummary);
       if (characterRange) {
         const location = document.createElement("p");
         location.className = "passage-location";
         location.textContent = characterRange.slice(3);
-        card.append(summary, location, excerpt);
-      } else {
-        card.append(summary, excerpt);
+        exact.append(location);
       }
+      const original = document.createElement("pre");
+      original.textContent = item.text;
+      exact.append(original);
+      card.append(exact);
       if (item.source) {
         const link = paperLink(item.source, item.page);
         link.textContent = "Open paper ↗";

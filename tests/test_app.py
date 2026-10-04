@@ -152,6 +152,36 @@ def test_ask_returns_passage_location_for_cited_evidence(tmp_path, monkeypatch):
 
     assert app.ask_question("Question?")["references"] == [{
         "id": "E1", "reference": "Paper, page 2", "source": "one.pdf", "page": 2,
-        "text": "A matched passage.", "passage": 4,
+        "text": "A **matched** passage.", "display_text": "A matched passage.", "passage": 4,
         "character_start": 14, "character_end": 36,
     }]
+
+
+def test_readable_preview_keeps_canonical_cited_text_and_offsets(tmp_path, monkeypatch):
+    from src.citations import assign_evidence
+    (tmp_path / "one.pdf").write_bytes(b"%PDF-")
+    monkeypatch.setattr(app, "PAPERS", tmp_path)
+    raw = (
+        "ZHICHENG DOU, Renmin University of China, China&#x20;\n\n"
+        "JIAXIN MAO\\<sup>†\\</sup> , Renmin University of China, China&#x20;\n\n"
+        "We assess six dimensions: **factuality**, _robustness_, fairness, "
+        "transparency, accountability, and \\<u>privacy\\</u>.\n\n"
+        "∗Co-first authors.&#x20;\n\n†Corresponding authors.&#x20;\n\n"
+        "Authors’ Contact Information: researcher@example.com."
+    )
+    chunks = [{"id": "expanded", "text": raw, "source": "one.pdf", "title": "Paper", "page": 1,
+               "metadata": {"character_start": 663, "character_end": 663 + len(raw)}}]
+    evidence = assign_evidence(chunks)
+    monkeypatch.setattr(app, "retrieve", lambda *args, **kwargs: chunks)
+    monkeypatch.setattr(app, "generate_answer", lambda question, supplied: SimpleNamespace(
+        status=GenerationStatus.ANSWERED, answer="Six dimensions [E1].",
+        validation=SimpleNamespace(valid_evidence=evidence, coverage_warnings=[],
+                                   semantic_support="passed", semantic_verdicts=[])))
+    reference = app.ask_question("Which dimensions?")["references"][0]
+    assert reference["text"] == raw == evidence[0].text
+    assert reference["display_text"] == (
+        "We assess six dimensions: factuality, robustness, fairness, "
+        "transparency, accountability, and privacy."
+    )
+    assert reference["character_start"] == 663
+    assert reference["character_end"] == 663 + len(raw)

@@ -719,3 +719,17 @@ code {
     padding: 8px 8px 8px 12px;
   }
 }
+
+.exact-evidence {
+  margin: 12px 0;
+}
+
+.exact-evidence pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.6;
+}

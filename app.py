@@ -4,6 +4,7 @@ import json
 import os
 import random
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from src.text_normalize import evidence_excerpt_for_display
 from pathlib import Path
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -12,7 +13,6 @@ from src.generate import generate_answer
 from src.index_config import IndexCompatibilityError
 from src.retrieve import RetrievalConfig, retrieve
 from src.sync import SyncDeletionConfirmationRequired, SyncError, sync_library
-from src.text_normalize import evidence_excerpt_for_display
 
 
 ROOT = Path(__file__).resolve().parent
@@ -101,7 +101,8 @@ def ask_question(question, paper=None):
         "answer": result.answer,
         "references": [
             {"id": item.evidence_id, "reference": item.reference, "source": item.source,
-             "page": item.page, "text": evidence_excerpt_for_display(item.text),
+             "page": item.page, "text": item.text,
+             "display_text": evidence_excerpt_for_display(item.text),
              "passage": (item.metadata.get("chunk_index", -1) + 1
                          if isinstance(item.metadata.get("chunk_index"), int) else None),
              "character_start": item.metadata.get("character_start"),
@@ -109,6 +110,7 @@ def ask_question(question, paper=None):
             for item in cited
         ],
         "warnings": result.validation.coverage_warnings if cited else [],
+        "context_usage": chunks[0].get("metadata", {}).get("context_usage", {}) if chunks else {},
         "semantic_support": result.validation.semantic_support,
         "semantic_verdicts": getattr(result.validation, "semantic_verdicts", []),
     }
