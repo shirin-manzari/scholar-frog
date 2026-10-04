@@ -3,13 +3,15 @@ from __future__ import annotations
 
 import json
 import time
+from dataclasses import asdict
 from collections import defaultdict
 from pathlib import Path
 from typing import Callable
 
 from src.citations import GenerationStatus
 from src.generate import generate_answer
-from src.retrieve import retrieve
+from src.retrieve import (retrieve, RetrievalConfig, query_instruction,
+                          _non_negative_int, _enabled)
 
 
 DEFAULT_DATASET = Path("evaluations/golden-v1.json")
@@ -69,6 +71,7 @@ def _rate(numerator: int, denominator: int) -> float | None:
 def evaluate_dataset(
     dataset_path: str | Path = DEFAULT_DATASET, *, top_k: int = 5,
     retrieval_mode: str | None = None, include_generation: bool = False,
+    include_evidence_text: bool = False,
     retrieve_fn: Callable = retrieve, generate_fn: Callable = generate_answer,
     clock: Callable[[], float] = time.perf_counter,
 ) -> dict:
@@ -88,14 +91,21 @@ def evaluate_dataset(
     generation_seconds = 0.0
     citation_total = citation_correct = citation_valid_answers = 0
     per_paper = defaultdict(lambda: {"expected_cases": 0, "retrieval_hits": 0})
+    reciprocal_ranks = []
+    anchor_reciprocal_ranks = []
+    labeled_blocks = unmatched_blocks = 0
 
     for case in dataset["cases"]:
         expected = case.get("evidence", [])
         for source in {item["source"] for item in expected}:
             per_paper[source]["expected_cases"] += 1
         started = clock()
+        query_debug = {}
         try:
-            chunks = retrieve_fn(case["question"], top_k=top_k, retrieval_mode=retrieval_mode)
+            kwargs = {"top_k": top_k, "retrieval_mode": retrieval_mode}
+            if retrieve_fn is retrieve:
+                kwargs["debug"] = query_debug
+            chunks = retrieve_fn(case["question"], **kwargs)
             retrieval_error = None
         except Exception as exc:  # Record a failed case while preserving the rest of a benchmark run.
             chunks, retrieval_error = [], str(exc)
@@ -103,13 +113,21 @@ def evaluate_dataset(
         retrieval_seconds += elapsed
         retrieval_hit = bool(expected) and any(_locator_matches(chunk, expected) for chunk in chunks)
         anchor_locations = [
-            {"source": chunk.get("source"), "page": anchor["page"]}
+            {"source": chunk.get("source"), "page": anchor["page"], "rank": anchor.get("rank", 1)}
             for chunk in chunks for anchor in chunk.get("anchor_hits", [])
         ]
         if not any("anchor_hits" in chunk for chunk in chunks):
             anchor_locations = chunks  # Compatibility with unexpanded providers.
         anchor_page_hit = bool(expected) and any(_locator_matches(item, expected) for item in anchor_locations)
         if expected:
+            anchor_reciprocal_ranks.append(max(
+                (1 / max(1, item.get("rank", rank))
+                 for rank, item in enumerate(anchor_locations, 1)
+                 if _locator_matches(item, expected)), default=0.0))
+            reciprocal_ranks.append(next((1 / rank for rank, chunk in enumerate(chunks, 1)
+                                          if _locator_matches(chunk, expected)), 0.0))
+            labeled_blocks += len(chunks)
+            unmatched_blocks += sum(not _locator_matches(chunk, expected) for chunk in chunks)
             anchor_page_hits += anchor_page_hit
             retrieval_total += 1
             retrieval_hits += retrieval_hit
@@ -120,7 +138,9 @@ def evaluate_dataset(
         result = {
             "id": case["id"], "question": case["question"], "expected": case["expected"],
             "expected_evidence": expected, "retrieved": [
-                {"id": chunk.get("id"), "source": chunk.get("source"), "page": chunk.get("page")}
+                {"id": chunk.get("id"), "source": chunk.get("source"), "page": chunk.get("page"),
+                 "anchor_hits": chunk.get("anchor_hits", []),
+                 **({"text": chunk.get("text", "")} if include_evidence_text else {})}
                 for chunk in chunks
             ],
             "selected_anchor_count": len({anchor["id"] for chunk in chunks for anchor in chunk.get("anchor_hits", [])})
@@ -129,6 +149,7 @@ def evaluate_dataset(
             "context_usage": chunks[0].get("metadata", {}).get("context_usage", {}) if chunks else {},
             "anchor_page_hit": anchor_page_hit,
             "retrieval_hit": retrieval_hit, "retrieval_latency_ms": round(elapsed * 1000, 2),
+            "query_processing": query_debug,
         }
         if retrieval_error:
             result["retrieval_error"] = retrieval_error
@@ -178,6 +199,11 @@ def evaluate_dataset(
         f"retrieval_recall_at_{top_k}": _rate(retrieval_hits, retrieval_total),
         "mean_retrieval_latency_ms": round(retrieval_seconds * 1000 / len(cases), 2),
         "per_paper_coverage": paper_coverage,
+        "context_locator_mrr": round(sum(reciprocal_ranks) / len(reciprocal_ranks), 4) if reciprocal_ranks else None,
+        "anchor_locator_mrr": round(sum(anchor_reciprocal_ranks) / len(anchor_reciprocal_ranks), 4) if anchor_reciprocal_ranks else None,
+        "unjudged_or_irrelevant_block_fraction": _rate(unmatched_blocks, labeled_blocks),
+        "negative_cases_with_evidence": sum(bool(case["retrieved"]) for case in cases if case["expected"] == "abstained"),
+        "negative_evidence_blocks": sum(len(case["retrieved"]) for case in cases if case["expected"] == "abstained"),
     }
     if include_generation:
         metrics.update({
@@ -194,7 +220,24 @@ def evaluate_dataset(
             ),
             "mean_generation_latency_ms": round(generation_seconds * 1000 / generation_total, 2),
         })
+    from src.ingest import get_index_config
+    index_config = get_index_config()
+    retrieval_config = RetrievalConfig.from_env()
+    from src.context_budget import positive_setting
+    context_settings = {name: positive_setting(name, default) for name, default in {
+        "CONTEXT_BUDGET_TOKENS": 4000, "CONTEXT_WINDOW_TOKENS": 8192,
+        "CONTEXT_ANSWER_RESERVE": 1024, "CONTEXT_FRAMING_RESERVE": 32}.items()}
+    context_settings.update({name: _non_negative_int(name, default) for name, default in {
+        "CONTEXT_PARAGRAPHS": 1, "CONTEXT_EXPANSION_TOKENS": 1500,
+        "CONTEXT_RETRY_RESERVE": 256}.items()})
+    context_settings["CONTEXT_SAME_SECTION"] = _enabled("CONTEXT_SAME_SECTION", "true")
     return {
+        "effective_settings": {"retrieval": {**asdict(retrieval_config), "mode": retrieval_mode or retrieval_config.mode},
+                               "index": index_config.canonical(),
+                               "context": context_settings,
+                               "query_instruction": query_instruction(index_config.embedding_model),
+                               "query_expansion": _enabled("QUERY_EXPANSION"),
+                               "query_max_variants": min(_non_negative_int("QUERY_MAX_VARIANTS", 2), 2)},
         "dataset": dataset.get("name", Path(dataset_path).name), "dataset_version": dataset["version"],
         "top_k_semantics": "maximum selected anchors; context page recall includes expansion",
         "top_k": top_k, "retrieval_mode": retrieval_mode or "environment default",

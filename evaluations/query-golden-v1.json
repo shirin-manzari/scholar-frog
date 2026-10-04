@@ -1,0 +1,116 @@
+{
+  "version": 1,
+  "name": "scholar-frog-query-golden-v1",
+  "cases": [
+    {
+      "id": "bias-data-selection-definition",
+      "question": "How does the bias survey define data selection bias?",
+      "expected": "answered",
+      "evidence": [
+        {
+          "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+          "page": 3
+        }
+      ],
+      "manual_check": "Stored source/page excerpt reviewed: bias definition p3; 87% editors p6; six dimensions and 19 LLMs p4; three system stages p6. Medieval astronomy absent."
+    },
+    {
+      "id": "bias-wikipedia-editor-demographics",
+      "question": "What proportion of Wikipedia editors does the bias survey report are male?",
+      "expected": "answered",
+      "evidence": [
+        {
+          "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+          "page": 6
+        }
+      ],
+      "manual_check": "Stored source/page excerpt reviewed: bias definition p3; 87% editors p6; six dimensions and 19 LLMs p4; three system stages p6. Medieval astronomy absent."
+    },
+    {
+      "id": "rag-trc-bench",
+      "question": "What does the Trustworthiness in RAG survey say TRC Bench covers and how many LLMs it evaluates?",
+      "expected": "answered",
+      "evidence": [
+        {
+          "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+          "page": 4
+        }
+      ],
+      "manual_check": "Stored source/page excerpt reviewed: bias definition p3; 87% editors p6; six dimensions and 19 LLMs p4; three system stages p6. Medieval astronomy absent."
+    },
+    {
+      "id": "rag-system-stages",
+      "question": "What main stages does the Trustworthiness in RAG survey describe for a complete RAG system?",
+      "expected": "answered",
+      "evidence": [
+        {
+          "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+          "page": 6
+        }
+      ],
+      "manual_check": "Stored source/page excerpt reviewed: bias definition p3; 87% editors p6; six dimensions and 19 LLMs p4; three system stages p6. Medieval astronomy absent."
+    },
+    {
+      "id": "out-of-corpus-medieval-astronomy",
+      "question": "What evidence do these papers provide about medieval astronomy?",
+      "expected": "abstained",
+      "evidence": [],
+      "manual_check": "Stored source/page excerpt reviewed: bias definition p3; 87% editors p6; six dimensions and 19 LLMs p4; three system stages p6. Medieval astronomy absent."
+    },
+    {
+      "id": "acronym-ipi",
+      "question": "How does IPI affect retrieved documents in the Trustworthiness in RAG survey?",
+      "expected": "answered",
+      "evidence": [
+        {
+          "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+          "page": 13
+        }
+      ],
+      "manual_check": "Page 13 Interaction-level Attacks explicitly defines Indirect Prompt Injection (IPI) and malicious instructions in retrieved documents."
+    },
+    {
+      "id": "acronym-rlhf",
+      "question": "Why is RLHF used to improve trustworthiness in the RAG survey?",
+      "expected": "answered",
+      "evidence": [
+        {
+          "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+          "page": 3
+        }
+      ],
+      "manual_check": "Page 3 explicitly defines reinforcement learning from human feedback (RLHF) as a trustworthiness technique."
+    },
+    {
+      "id": "terminology-mia",
+      "question": "What do membership inference attacks reveal about the retrieval database?",
+      "expected": "answered",
+      "evidence": [
+        {
+          "source": "Trustworthiness in Retrieval-Augmented Generation Systems- A Survey.pdf",
+          "page": 23
+        }
+      ],
+      "manual_check": "Page 23 Inference Attacks states MIA reveals whether a specific document exists in the retrieval database."
+    },
+    {
+      "id": "negation-wikipedia",
+      "question": "Does the bias survey say Wikipedia editors are not predominantly male, despite reporting 87%?",
+      "expected": "answered",
+      "evidence": [
+        {
+          "source": "Biases in Large Language Models - Origins, Inventory, andDiscussion.pdf",
+          "page": 6
+        }
+      ],
+      "manual_check": "Page 6 says the majority are males (87%); this passage supports rejecting the negated premise, not affirming it."
+    },
+    {
+      "id": "negative-units",
+      "question": "What do these papers report about RAG accuracy at a dose of 20 mg/L in 2025?",
+      "expected": "abstained",
+      "evidence": [],
+      "manual_check": "Reviewed corpus topics and searched stored pages: no dosage study or mg/L measurement. RAG mentions alone cannot answer the dose-specific question."
+    }
+  ]
+}

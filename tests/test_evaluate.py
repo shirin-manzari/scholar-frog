@@ -74,3 +74,32 @@ def test_anchor_page_recall_is_separate_from_expanded_context_page_recall(datase
     assert report['metrics']['context_page_recall'] == 1.0
     assert report['cases'][0]['selected_anchor_count'] == 1
     assert report['cases'][0]['context_usage']['evidence_tokens'] == 42
+
+
+def test_evaluation_reports_effective_query_and_context_settings(dataset, monkeypatch):
+    monkeypatch.setenv('QUERY_INSTRUCTION', 'off')
+    monkeypatch.setenv('QUERY_EXPANSION', 'true')
+    monkeypatch.setenv('QUERY_MAX_VARIANTS', '1')
+    monkeypatch.setenv('DENSE_CANDIDATES', '17')
+    monkeypatch.setenv('CONTEXT_PARAGRAPHS', '0')
+    report = evaluate_dataset(dataset, retrieval_mode='hybrid', retrieve_fn=lambda *a, **kw: [])
+    settings = report['effective_settings']
+    assert settings['query_instruction'] == ''
+    assert settings['query_expansion'] is True
+    assert settings['query_max_variants'] == 1
+    assert settings['retrieval']['dense_candidates'] == 17
+    assert settings['retrieval']['mode'] == 'hybrid'
+    assert settings['context']['CONTEXT_PARAGRAPHS'] == 0
+    assert report['metrics']['context_locator_mrr'] == 0
+    assert report['metrics']['negative_cases_with_evidence'] == 0
+
+
+def test_anchor_mrr_uses_anchor_rank_not_context_block_order(dataset):
+    def provider(question, **kwargs):
+        return [{'source': 'paper.pdf', 'page': 2, 'text': 'Reviewed excerpt',
+                 'anchor_hits': [{'id': 'hit', 'page': 2, 'rank': 3}]}]
+    report = evaluate_dataset(dataset, retrieve_fn=provider, include_evidence_text=True)
+    assert report['metrics']['context_locator_mrr'] == 1.0
+    assert report['metrics']['anchor_locator_mrr'] == .3333
+    assert report['metrics']['negative_evidence_blocks'] == 1
+    assert report['cases'][0]['retrieved'][0]['text'] == 'Reviewed excerpt'

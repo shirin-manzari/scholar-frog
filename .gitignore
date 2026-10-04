@@ -1,5 +1,9 @@
 chroma_db/
-/evaluations/
+/evaluations/*
+!/evaluations/compare_queries.py
+!/evaluations/query-golden-v1.json
+!/evaluations/query-processing-comparison.json
+!/evaluations/query-processing-comparison.md
 /evaluation-results/
 papers/*.pdf
 !papers/.gitkeep
