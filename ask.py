@@ -139,6 +139,8 @@ def main():
                         help="Disable claim-to-evidence semantic verification")
     parser.add_argument("--debug-citations", action="store_true",
                         help="Show evidence mapping, validation details, and original response")
+    parser.add_argument("--debug-retrieval", action="store_true",
+                        help="Show original query, variants, dense instruction and candidate budgets")
     args = parser.parse_args()
 
     if args.top_k <= 0:
@@ -171,8 +173,11 @@ def main():
         try:
             for mode in RETRIEVAL_MODES:
                 start = time.perf_counter()
+                debug = {} if args.debug_retrieval else None
                 results = retrieve(args.question, top_k=args.top_k,
-                                   retrieval_mode=mode, paper=args.paper)
+                                   retrieval_mode=mode, paper=args.paper, debug=debug)
+                if debug is not None:
+                    console.print_json(data=debug)
                 elapsed = time.perf_counter() - start
                 console.print(f"[bold cyan]{mode}[/bold cyan] — {elapsed:.2f}s")
                 if not results:
@@ -196,11 +201,14 @@ def main():
         return
 
     try:
+        debug = {} if args.debug_retrieval else None
         with console.status("[bold cyan]Retrieving relevant excerpts...[/bold cyan]"):
             chunks = retrieve(
                 args.question, top_k=args.top_k, retrieval_mode=args.retrieval,
-                paper=args.paper,
+                paper=args.paper, debug=debug,
             )
+        if debug is not None:
+            console.print_json(data=debug)
     except (IndexCompatibilityError, ValueError) as exc:
         console.print(f"[red]Retrieval failed:[/red] {exc}")
         return 1
