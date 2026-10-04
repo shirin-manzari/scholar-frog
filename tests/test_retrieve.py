@@ -96,7 +96,13 @@ def committed_snapshot(collection):
     return CommittedSnapshot("snapshot-" + str(len(owners)), frozenset(owners), owners)
 
 
+from passage_helpers import CharacterTokenizer
+
+
 class FakeEmbeddingModel:
+    tokenizer = CharacterTokenizer()
+    max_seq_length = 512
+
     def encode(self, questions, **kwargs):
         class Embeddings(list):
             def tolist(self):
@@ -511,7 +517,7 @@ def test_distinct_anchors_take_priority_over_adjacent_chunks():
     assert all(item["selection_reason"] == "anchor" for item in selected)
 
 
-def test_reranker_receives_corrected_search_question(monkeypatch):
+def test_reranker_receives_original_question(monkeypatch):
     rows = [{
         "id": "dimensions",
         "text": "We propose six dimensions of trustworthiness. " + "dimension " * 8,
@@ -543,7 +549,7 @@ def test_reranker_receives_corrected_search_question(monkeypatch):
     )
 
     assert [item["id"] for item in hits] == ["dimensions"]
-    assert seen_questions == ["What are dimension of trustworthiness?"]
+    assert seen_questions == ["What are diminention of trustworthiness?"]
 
 
 def test_default_rerank_pipeline_returns_no_evidence_below_threshold(

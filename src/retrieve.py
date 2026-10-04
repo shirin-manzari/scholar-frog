@@ -18,6 +18,123 @@ RETRIEVAL_MODES = ("dense", "hybrid", "hybrid-rerank")
 _bm25_cache = None
 _reranker = None
 _reranker_name = None
+_terminology_cache = None
+BGE_QUERY_INSTRUCTION = "Represent this sentence for searching relevant passages: "
+
+
+class QueryTokenLimitError(ValueError):
+    """An original query must fail explicitly; optional variants may be rejected."""
+
+
+def _dense_query_text(question, model, config):
+    from src.ingest import token_count, tokenizer_limits
+    encoded = query_instruction(config.embedding_model) + question
+    tokenizer, capacity = tokenizer_limits(model)
+    required = token_count(encoded, tokenizer)
+    if required > capacity:
+        raise QueryTokenLimitError(
+            f"Dense query requires {required} tokens including its query instruction; "
+            f"embedding capacity is {capacity}. Shorten the question; no query was truncated.")
+    return encoded
+
+
+def query_instruction(model_name: str) -> str:
+    """Query-only policy; deliberately excluded from the document index fingerprint."""
+    mode = os.getenv("QUERY_INSTRUCTION", "auto").strip().lower()
+    if mode not in {"auto", "off"}:
+        raise ValueError("QUERY_INSTRUCTION must be auto or off")
+    return (BGE_QUERY_INSTRUCTION if mode == "auto"
+            and model_name == "BAAI/bge-small-en-v1.5" else "")
+
+
+def _enabled(name: str, default: str = "false") -> bool:
+    from src.index_config import _bool
+    try:
+        return _bool(os.getenv(name, default))
+    except ValueError as exc:
+        raise ValueError(f"{name} must be true or false") from exc
+
+
+def _get_terminology(collection, snapshot, corpus, document_id=None):
+    """Only explicit, initial-aligned parenthetical definitions are trusted.
+
+    Cache all definitions by committed revision; scope BEFORE resolving ambiguity.
+    No dictionary, language model, or uncommitted page text participates.
+    """
+    global _terminology_cache
+    key = (getattr(collection, "name", id(collection)), snapshot.revision)
+    if not _terminology_cache or _terminology_cache[0] != key:
+        definitions = {}
+        for record in corpus:
+            text = record["text"] + "\n" + record["title"]
+            # Restrict to alphabetic acronyms; identifiers and units are not aliases.
+            for match in re.finditer(r"\b([A-Z][A-Z-]{1,9})\s*\(([^()\n]{3,100})\)|"
+                                     r"([^()\n.!?;:]{3,100})\s*\(([A-Z][A-Z-]{1,9})\)", text):
+                acronym = match[1] or match[4]
+                raw = match[2] or match[3]
+                letters = acronym.replace("-", "").lower()
+                words = re.findall(r"[A-Za-z]+", raw)
+                # Long-form-before-acronym may include sentence-leading prose.
+                stopwords = {"of", "from", "and", "the", "for", "to", "in"}
+                options = [words] if match[1] else [words[-n:] for n in range(len(letters), min(len(words), 2 * len(letters)) + 1)]
+                words = next((candidate for candidate in options
+                              if "".join(w[0].lower() for w in candidate) == letters
+                              or "".join(w[0].lower() for w in candidate if w.lower() not in stopwords) == letters), [])
+                if not words or re.search(r"\d", raw):
+                    continue
+                phrase = " ".join(words)
+                entry = definitions.setdefault(acronym, {})
+                entry.setdefault(phrase.casefold(), {"phrase": phrase, "papers": set()})["papers"].add(_paper_key(record))
+        _terminology_cache = (key, definitions)
+    resolved = {}
+    for acronym, meanings in _terminology_cache[1].items():
+        scoped = [value for value in meanings.values()
+                  if document_id is None or document_id in value["papers"]]
+        if len(scoped) == 1:
+            resolved[acronym] = scoped[0]["phrase"]
+    return resolved
+
+
+def _search_queries(question, corrected, terminology, *, subqueries=()):
+    """One shared variant allowance: plan queries, correction, then aliases.
+
+    Subqueries are for trusted retrieval plans, never generated answers. The
+    current pipeline has structural overview selection rather than subqueries.
+    """
+    limit = min(_non_negative_int("QUERY_MAX_VARIANTS", 2), 2)
+    queries = [question]
+    seen = {" ".join(question.split()).casefold()}
+
+    def add(value):
+        key = " ".join(value.split()).casefold()
+        if value.strip() and key not in seen and len(queries) <= limit:
+            queries.append(value)
+            seen.add(key)
+
+    for value in subqueries:
+        add(value)
+    add(corrected)
+    if _enabled("QUERY_EXPANSION"):
+        for acronym, phrase in sorted(terminology.items()):
+            match = re.search(r"(?<![\w./+#-])" + re.escape(acronym) + r"(?![\w/+#-]|\.\w)", question)
+            alias = phrase
+            if not match:
+                pattern = r"(?<![\w./+#-])" + r"[\s-]+".join(map(re.escape, phrase.split())) + r"(?![\w/+#-]|\.\w)"
+                match = re.search(pattern, question, re.IGNORECASE)
+                alias = acronym
+            if match:
+                # Insert only the attested alias; preserve every original character.
+                add(question[:match.end()] + f" ({alias})" + question[match.end():])
+    return queries
+
+
+def _query_budgets(total, query_count):
+    """Keep half for the original; all variants share the other half."""
+    if query_count == 1:
+        return [total]
+    original = (total + 1) // 2
+    quotient, remainder = divmod(total - original, query_count - 1)
+    return [original] + [quotient + (i < remainder) for i in range(query_count - 1)]
 
 
 @dataclass(frozen=True)
@@ -136,7 +253,11 @@ def _tokenize(text: str) -> list[str]:
 def _correct_search_question(question: str, tokenized: list[list[str]]) -> str:
     """Correct confident corpus-backed typos for search, not for the answer."""
     counts = Counter(token for document in tokenized for token in document if token.isalpha())
-    frequent = sorted(token for token, count in counts.items() if count >= 5 and len(token) >= 6)
+    # Only ordinary retrieval vocabulary is eligible as a correction target.
+    # Unknown names/technical terms are never guessed from arbitrary corpus words.
+    ordinary = {"dimension", "trustworthiness", "retrieval", "generation", "evaluation",
+                "hallucination", "contribute", "comparison", "performance", "methodology"}
+    frequent = sorted(token for token, count in counts.items() if count >= 5 and token in ordinary)
     if not frequent:
         return question
 
@@ -144,10 +265,10 @@ def _correct_search_question(question: str, tokenized: list[list[str]]) -> str:
         word = match.group(0)
         # Keep names and acronyms intact; sentence-initial capitalization is
         # allowed because it is common in ordinary questions.
-        if (word[0].isupper() and match.start() > 0) or word.isupper():
+        if not word.islower() or not word.isalpha() or len(word) < 6:
             return word
         normalized = _normalize_english_term(word.casefold())
-        if counts[normalized] >= 2:
+        if counts[normalized] >= 1:
             return word
         matches = get_close_matches(normalized, frequent, n=2, cutoff=0.78)
         if not matches:
@@ -160,7 +281,7 @@ def _correct_search_question(question: str, tokenized: list[list[str]]) -> str:
                 return word
         return best.capitalize() if word[0].isupper() else best
 
-    return re.sub(r"(?u)\b[^\W\d_]{6,}\b", correct, question)
+    return re.sub(r"(?u)(?<![\w./+#-])[^\W_][\w./+#-]*(?![\w./+#-])", correct, question)
 
 
 def _corpus_fingerprint(ids: list[str], docs: list[str], metadatas: list[dict]) -> str:
@@ -207,7 +328,8 @@ def _get_bm25_index(collection, snapshot):
     for chunk_id, text, metadata in zip(ids, docs, metadatas):
         owner = snapshot.owners.get(chunk_id)
         metadata = metadata or {}
-        if owner is None or (metadata.get("document_id") and metadata["document_id"] != owner["document_id"]):
+        if (owner is None or (metadata.get("document_id") and metadata["document_id"] != owner["document_id"])
+                or (owner.get("document_version") and metadata.get("document_version") != owner["document_version"])):
             continue
         records.append(_make_committed_result(chunk_id, text, metadata, owner))
         tokenized.append(_tokenize(text))
@@ -251,8 +373,9 @@ def _dense_search(question: str, collection, count: int, candidate_count: int,
         return []
     config = get_index_config()
     model = get_embedding_model()
+    encoded_question = _dense_query_text(question, model, config)
     query_embedding = model.encode(
-        [question], normalize_embeddings=config.normalize_embeddings
+        [encoded_question], normalize_embeddings=config.normalize_embeddings, prompt=""
     ).tolist()
     if len(query_embedding[0]) != config.embedding_dimension:
         raise ValueError(
@@ -284,7 +407,8 @@ def _dense_search(question: str, collection, count: int, candidate_count: int,
             owner = snapshot.owners.get(chunk_id)
             metadata = metadata or {}
             if (chunk_id not in allowed_ids or owner is None
-                    or (metadata.get("document_id") and metadata["document_id"] != owner["document_id"])):
+                    or (metadata.get("document_id") and metadata["document_id"] != owner["document_id"])
+                    or (owner.get("document_version") and metadata.get("document_version") != owner["document_version"])):
                 continue
             hit = _make_committed_result(chunk_id, text, metadata, owner)
             hit["distance"] = hit["dense_distance"] = float(distance)
@@ -293,7 +417,7 @@ def _dense_search(question: str, collection, count: int, candidate_count: int,
         if len(hits) >= target or fetch >= count:
             break
         fetch = min(count, max(fetch + 1, fetch * 2))
-    return sorted(hits, key=lambda hit: (hit["distance"], hit["id"]))
+    return sorted(hits, key=lambda hit: (hit["distance"], hit["id"]))[:target]
 
 
 def _bm25_search(question: str, collection, candidate_count: int, snapshot,
@@ -322,13 +446,17 @@ def _bm25_search(question: str, collection, candidate_count: int, snapshot,
     return hits
 
 
-def reciprocal_rank_fusion(*ranked_lists: list[dict], k: int = 60) -> list[dict]:
+def reciprocal_rank_fusion(*ranked_lists: list[dict], k: int = 60,
+                           weights: list[float] | None = None) -> list[dict]:
     if k <= 0:
         raise ValueError("k must be greater than zero")
 
+    weights = [1.0] * len(ranked_lists) if weights is None else weights
+    if len(weights) != len(ranked_lists) or any(not math.isfinite(w) or w < 0 for w in weights):
+        raise ValueError("Fusion weights must be finite, non-negative, and match ranked lists")
     fused = {}
     scores = {}
-    for ranked in ranked_lists:
+    for ranked, weight in zip(ranked_lists, weights):
         seen = set()
         unique = []
         for result in ranked:
@@ -343,11 +471,17 @@ def reciprocal_rank_fusion(*ranked_lists: list[dict], k: int = 60) -> list[dict]
                 fused[chunk_id] = result.copy()
                 scores[chunk_id] = 0.0
             else:
+                provenance = fused[chunk_id].get("retrieval_queries", []) + result.get("retrieval_queries", [])
                 fused[chunk_id].update({
                     key: value for key, value in result.items()
-                    if value is not None
+                    if value is not None and key not in {"retrieval_queries", "dense_distance", "distance", "dense_score", "bm25_score"}
                 })
-            scores[chunk_id] += 1 / (k + rank)
+                fused[chunk_id]["retrieval_queries"] = provenance
+                for field in ("dense_distance", "distance", "dense_score", "bm25_score"):
+                    values = [v for v in (fused[chunk_id].get(field), result.get(field)) if v is not None]
+                    if values:
+                        fused[chunk_id][field] = (min if field.endswith("distance") else max)(values)
+            scores[chunk_id] += weight / (k + rank)
 
     ordered_ids = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))
     for chunk_id in ordered_ids:
@@ -701,11 +835,14 @@ def expand_context(question: str, anchors: list[dict], corpus: list[dict], snaps
                                          "character_end": anchors[r]["metadata"]["character_end"],
                                          "rank": r + 1,
                                          "selection_reason": anchors[r].get("selection_reason", "anchor"),
+                                         "retrieval_queries": anchors[r].get("retrieval_queries", []),
                                          "scores": {k: v for k, v in anchors[r].items()
                                                     if k.endswith(("score", "distance"))}}
                                         for r in sorted(ranks)]}
             evidence["anchor_hits"] = [hit for hit in evidence["anchor_hits"]
                                        if hit["id"] in {anchors[r]["id"] for r in contained}]
+            evidence["retrieval_queries"] = [query for hit in evidence["anchor_hits"]
+                                             for query in hit["retrieval_queries"]]
             # A context block is not an independently ranked search result.
             exact = len(contained) == 1 and text == anchors[contained[0]]["text"]
             for field in list(evidence):
@@ -792,9 +929,15 @@ SELECTED_PAPER_NOT_INDEXED_MESSAGE = (
 
 def _retrieve_locked(question: str, top_k: int | None = None,
                      retrieval_mode: str | None = None,
-                     paper: str | None = None) -> list[dict]:
+                     paper: str | None = None, *, debug: dict | None = None) -> list[dict]:
     """Return ranked Chroma chunks with citation metadata and method scores."""
     config = RetrievalConfig.from_env()
+    instruction = query_instruction(get_index_config().embedding_model)
+    if debug is not None:
+        debug.clear()
+        debug.update(original_query=question, variants=[], query_instruction=instruction,
+                     instruction_used=False, expansion_enabled=_enabled("QUERY_EXPANSION"),
+                     candidate_counts=[])
     top_k = config.final_results if top_k is None else top_k
     if top_k <= 0:
         raise ValueError("top_k must be greater than zero")
@@ -827,21 +970,70 @@ def _retrieve_locked(question: str, top_k: int | None = None,
     if document_id is not None:
         tokenized = [tokens for result, tokens in zip(correction_corpus, tokenized)
                      if _paper_key(result) == document_id]
-    search_question = _correct_search_question(question, tokenized)
-
-    dense = _dense_search(search_question, collection, count, config.dense_candidates,
-                          snapshot, document_id)
+    corrected = _correct_search_question(question, tokenized)
+    terminology = (_get_terminology(collection, snapshot, correction_corpus, document_id)
+                   if _enabled("QUERY_EXPANSION") else {})
+    queries = _search_queries(question, corrected, terminology)
+    if len(queries) > 1:
+        approved = []
+        model, index_config = get_embedding_model(), get_index_config()
+        for i, query in enumerate(queries):
+            try:
+                _dense_query_text(query, model, index_config)
+            except QueryTokenLimitError as exc:
+                if i == 0:
+                    raise
+                if debug is not None:
+                    debug.setdefault("rejected_variants", []).append({"query": query, "reason": str(exc)})
+            else:
+                approved.append(query)
+        queries = approved
+    dense_budgets = _query_budgets(config.dense_candidates, len(queries))
+    bm25_budgets = _query_budgets(config.bm25_candidates, len(queries))
+    rankings, weights = [], []
+    for i, search_question in enumerate(queries):
+        dense = _dense_search(search_question, collection, count, dense_budgets[i],
+                              snapshot, document_id)
+        if debug is not None and dense_budgets[i] > 0:
+            debug["instruction_used"] = bool(instruction)
+        bm25 = ([] if mode == "dense" or bm25_budgets[i] == 0 else
+                _bm25_search(search_question, collection, bm25_budgets[i], snapshot, document_id))
+        for method, hits in (("dense", dense), ("bm25", bm25)):
+            for rank, hit in enumerate(hits, 1):
+                hit["retrieval_queries"] = [{"query": search_question, "original": i == 0,
+                                             "method": method, "rank": rank,
+                                             "score": hit.get(method + "_score")}]
+            if mode != "dense" or method == "dense":
+                rankings.append(hits)
+                weights.append(1.0 if i == 0 else 1.0 / (len(queries) - 1))
+        if debug is not None:
+            debug["candidate_counts"].append({"query": search_question, "dense": len(dense),
+                                               "bm25": len(bm25), "dense_budget": dense_budgets[i],
+                                               "bm25_budget": 0 if mode == "dense" else bm25_budgets[i]})
+    fused = reciprocal_rank_fusion(*rankings, k=config.rrf_k, weights=weights)
+    if debug is not None:
+        debug.update(variants=queries[1:], committed_revision=snapshot.revision,
+                     fused_candidates=len(fused), reranked_candidates=0)
+        debug["candidate_provenance"] = {
+            hit["id"]: {"queries": hit.get("retrieval_queries", []),
+                        "rrf_score": hit["rrf_score"], "page": hit["page"],
+                        "source": hit["source"]} for hit in fused}
     if mode == "dense":
-        results = dense
+        results = dense if len(queries) == 1 else fused
     else:
-        bm25 = _bm25_search(search_question, collection, config.bm25_candidates,
-                            snapshot, document_id)
-        fused = reciprocal_rank_fusion(dense, bm25, k=config.rrf_k)
         if mode == "hybrid":
             results = fused
         else:
             candidates = fused[:config.rerank_candidates]
-            reranked = _rerank(search_question, candidates, config.reranker_model)
+            # Reserve half the rerank allowance for original-query hits, without
+            # adding reranker calls or allowing aliases to crowd them all out.
+            original_hits = [hit for hit in fused if any(q["original"] for q in hit.get("retrieval_queries", []))]
+            reserved = original_hits[:(config.rerank_candidates + 1) // 2]
+            candidates = list({hit["id"]: hit for hit in reserved + candidates}.values())[:config.rerank_candidates]
+            reranked = _rerank(question, candidates, config.reranker_model)
+            if debug is not None:
+                debug["reranked_candidates"] = len(candidates)
+                debug["reranked_scores"] = {hit["id"]: hit["reranker_score"] for hit in reranked}
             _, corpus, _ = _get_bm25_index(collection, snapshot)
             if document_id is not None:
                 corpus = [result for result in corpus if _paper_key(result) == document_id]
@@ -855,9 +1047,12 @@ def _retrieve_locked(question: str, top_k: int | None = None,
                 diversity=config.mmr_lambda,
                 adjacent_chunks=config.adjacent_chunks,
             )
-            overview = _overview_evidence(search_question, corpus, document_id)
+            overview = _overview_evidence(question, corpus, document_id)
+            for item in overview:
+                item["retrieval_queries"] = [{"query": question, "original": True,
+                                              "method": "structural", "rank": None, "score": None}]
             if overview:
-                if _DIMENSION_LIST_QUESTION.search(search_question) and all(
+                if _DIMENSION_LIST_QUESTION.search(question) and all(
                     item["selection_reason"] == "direct_list" for item in overview
                 ):
                     results = overview[:top_k]
@@ -884,6 +1079,11 @@ def _retrieve_locked(question: str, top_k: int | None = None,
         if counts[key] < config.max_chunks_per_paper and len(anchors) < top_k:
             anchors.append({**result, "is_anchor": True, "anchor_rank": len(anchors) + 1})
             counts[key] += 1
+    if debug is not None:
+        debug["selected_anchors"] = [{"id": hit["id"], "source": hit["source"],
+                                      "page": hit["page"], "rank": hit["anchor_rank"],
+                                      "retrieval_queries": hit.get("retrieval_queries", [])}
+                                     for hit in anchors]
     results = expand_context(question, anchors, correction_corpus, snapshot)
 
     if paper is not None:
@@ -897,10 +1097,10 @@ def _retrieve_locked(question: str, top_k: int | None = None,
 
 def retrieve(question: str, top_k: int | None = None,
              retrieval_mode: str | None = None,
-             paper: str | None = None) -> list[dict]:
+             paper: str | None = None, *, debug: dict | None = None) -> list[dict]:
     """Search a consistent committed manifest snapshot in every retrieval mode."""
     from src.sync import INDEX_LOCK
 
     with INDEX_LOCK:
         return _retrieve_locked(question, top_k=top_k,
-                                retrieval_mode=retrieval_mode, paper=paper)
+                                retrieval_mode=retrieval_mode, paper=paper, debug=debug)

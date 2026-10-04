@@ -71,7 +71,13 @@ class AtomicCollection:
             self.rows.pop(chunk_id, None)
 
 
+from passage_helpers import CharacterTokenizer
+
+
 class EmbeddingModel:
+    tokenizer = CharacterTokenizer()
+    max_seq_length = 512
+
     def encode(self, questions, **kwargs):
         class Encoded(list):
             def tolist(self):
@@ -384,7 +390,7 @@ def test_stored_context_survives_interrupted_write_and_version_recovery(harness,
     papers, db, collection = harness
     config = replace(ingest.get_index_config(), chunk_size=40, chunk_overlap=10)
     monkeypatch.setattr(ingest, "get_index_config", lambda: config)
-    monkeypatch.setattr(ingest, "tokenizer_limits", lambda: (CharacterTokenizer(), 510))
+    monkeypatch.setattr(ingest, "tokenizer_limits", lambda model=None: (CharacterTokenizer(), 510))
     monkeypatch.setattr(ingest, "get_embedding_model", lambda: EmbeddingModel())
     monkeypatch.setattr(ingest, "extract_pages", lambda path: [(1, path.read_text()), (2, "Continuation.")])
     monkeypatch.setattr(sync, "_prepare", _TOKEN_PREPARE)
