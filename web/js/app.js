@@ -463,16 +463,11 @@ function renderAnswer(data, bubble, turn) {
   answer.className = "answer";
   bubble.append(heading, answer);
   const references = new Map(data.references.map((item) => [item.id, item]));
-  // A running server from an earlier release does not yet include this optional
-  // field. Keep the UI backwards-compatible during a browser refresh/restart.
-  const semanticVerdicts = Array.isArray(data.semantic_verdicts)
-    ? data.semantic_verdicts
-    : [];
   renderMarkdownAnswer(answer, data.answer, references, turn);
 
   if (data.references.length) {
     const title = document.createElement("h3");
-    title.textContent = "Referenced excerpts:";
+    title.textContent = "Sources";
     const list = document.createElement("div");
     list.className = "references";
     for (const item of data.references) {
@@ -480,33 +475,10 @@ function renderAnswer(data, bubble, turn) {
       card.className = "reference";
       card.id = `reference-${turn}-${item.id}`;
       const summary = document.createElement("summary");
-      const passageLabel = item.passage ? ` · passage ${item.passage}` : "";
-      summary.textContent = `[${item.id}] ${withoutBoldMarkers(item.reference)}${passageLabel}`;
-      const characterRange =
-        Number.isInteger(item.character_start) &&
-        Number.isInteger(item.character_end)
-          ? ` · extracted characters ${item.character_start}–${item.character_end}`
-          : "";
+      summary.textContent = `[${item.id}] ${withoutBoldMarkers(item.reference)}`;
       const excerpt = document.createElement("p");
       excerpt.textContent = item.display_text ?? plainDisplayText(item.text);
       card.append(summary, excerpt);
-      // The preview is display-only. Offsets describe the canonical evidence
-      // supplied to generation, shown here without rewriting its contents.
-      const exact = document.createElement("details");
-      exact.className = "exact-evidence";
-      const exactSummary = document.createElement("summary");
-      exactSummary.textContent = "Exact supplied evidence";
-      exact.append(exactSummary);
-      if (characterRange) {
-        const location = document.createElement("p");
-        location.className = "passage-location";
-        location.textContent = characterRange.slice(3);
-        exact.append(location);
-      }
-      const original = document.createElement("pre");
-      original.textContent = item.text;
-      exact.append(original);
-      card.append(exact);
       if (item.source) {
         const link = paperLink(item.source, item.page);
         link.textContent = "Open paper ↗";
@@ -515,43 +487,6 @@ function renderAnswer(data, bubble, turn) {
       list.append(card);
     }
     bubble.append(title, list);
-  }
-  if (["passed", "failed"].includes(data.semantic_support)) {
-    const support = document.createElement("details");
-    support.className = "semantic-support";
-    const summary = document.createElement("summary");
-    summary.textContent =
-      data.semantic_support === "passed"
-        ? "Evidence check: LLM-reviewed"
-        : "Evidence check: review needed";
-    const note = document.createElement("p");
-    note.textContent =
-      "This checks whether cited excerpts appear to support the answer. It is a guardrail, not independent verification.";
-    support.append(summary, note);
-    if (semanticVerdicts.length) {
-      const verdicts = document.createElement("ul");
-      verdicts.className = "semantic-verdicts";
-      for (const verdict of semanticVerdicts) {
-        const item = document.createElement("li");
-        const state = verdict.supported ? "supported" : "not supported";
-        item.textContent = `${verdict.claim || verdict.claim_id}: ${state}. ${verdict.reason}`;
-        verdicts.append(item);
-      }
-      support.append(verdicts);
-    }
-    bubble.append(support);
-  }
-  if (data.warnings.length) {
-    const title = document.createElement("h3");
-    title.textContent = "Possible uncited sentences";
-    const warnings = document.createElement("ul");
-    warnings.className = "warnings";
-    for (const sentence of data.warnings) {
-      const item = document.createElement("li");
-      item.textContent = sentence;
-      warnings.append(item);
-    }
-    bubble.append(title, warnings);
   }
   scrollToLatest();
 }

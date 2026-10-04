@@ -531,12 +531,6 @@ code {
   font-weight: 700;
   line-height: 1.5;
 }
-.reference .passage-location {
-  margin: 10px 0 0;
-  color: var(--soft);
-  font-size: 11px;
-  line-height: 1.4;
-}
 .reference p {
   margin: 13px 0 0;
   color: var(--muted);
@@ -549,29 +543,6 @@ code {
   margin-top: 12px;
   color: var(--accent-ink);
   font-size: 13px;
-}
-.semantic-support {
-  margin-top: 18px;
-  color: var(--muted);
-  font-size: 12px;
-  line-height: 1.5;
-}
-.semantic-support summary {
-  cursor: pointer;
-  color: var(--accent-ink);
-  font-weight: 700;
-}
-.semantic-support p {
-  margin: 8px 0;
-}
-.semantic-verdicts {
-  margin: 8px 0 0;
-  padding-left: 19px;
-}
-.warnings {
-  color: var(--accent-ink);
-  font-size: 13px;
-  line-height: 1.5;
 }
 .composer-area {
   flex: none;
@@ -718,18 +689,4 @@ code {
   .question-form {
     padding: 8px 8px 8px 12px;
   }
-}
-
-.exact-evidence {
-  margin: 12px 0;
-}
-
-.exact-evidence pre {
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-  max-height: 320px;
-  overflow-y: auto;
-  font-family: inherit;
-  font-size: 13px;
-  line-height: 1.6;
 }
