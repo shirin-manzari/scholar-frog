@@ -226,6 +226,14 @@ def _not_applicable_validation(message: str | None = None) -> CitationValidation
 
 
 def _call_backend(backend: str, system: str, user: str) -> str:
+    # Recheck actual retry/verifier requests, whose prompts can differ from retrieval.
+    from src.context_budget import generation_token_counter, positive_setting
+    counter = generation_token_counter()
+    required = (counter.prompt_tokens(system, user, positive_setting("CONTEXT_FRAMING_RESERVE", 32))
+                + positive_setting("CONTEXT_ANSWER_RESERVE", 1024))
+    if required > positive_setting("CONTEXT_WINDOW_TOKENS", 8192):
+        raise ValueError(f"Generation request exceeds CONTEXT_WINDOW_TOKENS ({required} tokens, "
+                         f"{counter.method}); increase the window or reduce top_k; no evidence was truncated.")
     if backend == "ollama":
         return _call_ollama(system, user)
     if backend == "openai":
@@ -233,6 +241,11 @@ def _call_backend(backend: str, system: str, user: str) -> str:
     if backend == "anthropic":
         return _call_anthropic(system, user)
     raise ValueError(f"Unknown LLM_BACKEND: {backend}")
+
+
+def _generation_limit(name, default):
+    from src.context_budget import positive_setting
+    return positive_setting(name, default)
 
 
 def _call_ollama(system: str, user: str) -> str:
@@ -245,7 +258,9 @@ def _call_ollama(system: str, user: str) -> str:
             json={"model": model, "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
-            ], "think": False, "stream": False}, timeout=timeout,
+            ], "think": False, "stream": False, "options": {
+                "num_ctx": _generation_limit("CONTEXT_WINDOW_TOKENS", 8192),
+                "num_predict": _generation_limit("CONTEXT_ANSWER_RESERVE", 1024)}}, timeout=timeout,
         )
         resp.raise_for_status()
         return resp.json()["message"]["content"]
@@ -272,7 +287,7 @@ def _call_openai(system: str, user: str) -> str:
 
     client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     model = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
-    resp = client.chat.completions.create(model=model, messages=[
+    resp = client.chat.completions.create(model=model, max_completion_tokens=_generation_limit("CONTEXT_ANSWER_RESERVE", 1024), messages=[
         {"role": "system", "content": system}, {"role": "user", "content": user},
     ])
     return resp.choices[0].message.content
@@ -283,7 +298,7 @@ def _call_anthropic(system: str, user: str) -> str:
 
     client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     model = os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001")
-    resp = client.messages.create(model=model, max_tokens=1000, system=system,
+    resp = client.messages.create(model=model, max_tokens=_generation_limit("CONTEXT_ANSWER_RESERVE", 1024), system=system,
                                   messages=[{"role": "user", "content": user}])
     return resp.content[0].text
 
