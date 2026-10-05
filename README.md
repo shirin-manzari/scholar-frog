@@ -1,10 +1,8 @@
 # Scholar Frog
 
-This is a self-education project for learning how a local RAG pipeline works.
+Scholar Frog is a local-first research assistant for asking questions about academic PDFs. It retrieves relevant passages, answers with paper and page references, and can abstain when the evidence is insufficient.
 
-Ask a question about your PDFs. Scholar Frog finds relevant passages and gives an answer with links to the paper and page. If the evidence is thin, it says so.
-
-PDF processing and search run on your machine. Ollama handles answers locally by default.
+PDF processing, embeddings, and search run locally. Answers use Ollama by default; OpenAI and Anthropic are optional. Scholar Frog is also a self-education project for exploring how a retrieval-augmented generation (RAG) pipeline works.
 
 ## How it works
 
@@ -12,6 +10,10 @@ PDF processing and search run on your machine. Ollama handles answers locally by
 2. Ask a question: search passages with vector and keyword retrieval, then optionally rerank them.
 3. Build context: select relevant passages and nearby paragraphs within the answer budget.
 4. Generate an answer: send that context to Ollama by default, then check citation IDs and claim support.
+
+## Architecture
+
+PDF text is split into section- and sentence-aware passages, embedded locally, and stored in Chroma. Retrieval combines vector and keyword search, with optional reranking; answers cite retrieved evidence and are checked for citation validity and claim support. See [ARCHITECTURE.md](ARCHITECTURE.md) for implementation details.
 
 ## Start
 
