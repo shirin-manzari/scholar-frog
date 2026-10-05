@@ -5,19 +5,15 @@ chroma_db/
 !/evaluations/query-processing-comparison.json
 !/evaluations/query-processing-comparison.md
 /evaluation-results/
-papers/*.pdf
+papers/**
 !papers/.gitkeep
 .env
 __pycache__/
 *.pyc
 .venv/
 venv/
-AGENTS.md
-ARCHITECTURE.md
 .DS_Store
 *.ses
-README.md
-LICENSE
 
 !/evaluations/calibrate_relevance.py
 !/evaluations/compare_evidence.py
@@ -25,4 +21,3 @@ LICENSE
 !/evaluations/evidence-generation-comparison.json
 !/evaluations/evidence-comparison.md
 !/evaluations/relevance-labels-to-review.json
-!README.md

@@ -44,6 +44,13 @@ class CommittedSnapshot:
     owners: dict[str, dict]
 
 
+def _revision_from_rows(revision_rows: list[tuple], config_fingerprint: str) -> str:
+    revision_json = json.dumps(
+        [config_fingerprint, revision_rows], sort_keys=True, separators=(",", ":")
+    )
+    return hashlib.sha256(revision_json.encode()).hexdigest()
+
+
 def _committed_revision(documents: dict, config_fingerprint: str) -> str:
     revision_rows = []
     for digest, entry in sorted(documents.items()):
@@ -56,10 +63,7 @@ def _committed_revision(documents: dict, config_fingerprint: str) -> str:
                 f"Committed document {digest[:12]} has no valid committed chunk ID list.",
             )
         revision_rows.append((digest, ids, entry.get("paths", [])))
-    revision_json = json.dumps(
-        [config_fingerprint, revision_rows], sort_keys=True, separators=(",", ":")
-    )
-    return hashlib.sha256(revision_json.encode()).hexdigest()
+    return _revision_from_rows(revision_rows, config_fingerprint)
 
 
 def committed_snapshot(*, collection_count: int = 0) -> CommittedSnapshot:
@@ -108,10 +112,7 @@ def committed_snapshot(*, collection_count: int = 0) -> CommittedSnapshot:
                         )
                     owners[chunk_id] = {**owner, "document_version": chunk_id.rsplit("-", 1)[-1]}
                 revision_rows.append((digest, ids, paths))
-            revision_json = json.dumps(
-                [config_fingerprint, revision_rows], sort_keys=True, separators=(",", ":")
-            )
-            revision = hashlib.sha256(revision_json.encode()).hexdigest()
+            revision = _revision_from_rows(revision_rows, config_fingerprint)
             snapshot = CommittedSnapshot(
                 revision,
                 frozenset(owners), owners,

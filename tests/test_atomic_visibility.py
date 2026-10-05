@@ -111,7 +111,6 @@ def harness(tmp_path, monkeypatch):
     monkeypatch.setenv("RERANKER_MIN_SCORE", "0")
     monkeypatch.setenv("MAX_CHUNKS_PER_PAPER", "100")
     monkeypatch.setenv("MMR_LAMBDA", "1")
-    monkeypatch.setenv("ADJACENT_CHUNKS", "0")
     return papers, db, collection
 
 

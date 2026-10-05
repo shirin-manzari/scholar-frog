@@ -50,8 +50,8 @@ def test_threshold_boundary_and_both_error_directions():
     metrics = threshold_metrics(data, .5)
     assert metrics == {'threshold': .5, 'tp': 1, 'fp': 1, 'fn': 1, 'tn': 1,
                        'precision': .5, 'recall': .5, 'false_rejection_rate': .5, 'false_acceptance_rate': .5}
-    hits = r._select_context([chunk('a', score=.5), chunk('b', score=.499)], [], top_k=4,
-                            min_score=.5, max_per_paper=2, diversity=.75, adjacent_chunks=1)
+    hits = r._select_context([chunk('a', score=.5), chunk('b', score=.499)], top_k=4,
+                            min_score=.5, max_per_paper=2, diversity=.75)
     assert [h['id'] for h in hits] == ['a']
 
 
@@ -119,5 +119,3 @@ def test_implicit_baseline_threshold_is_model_specific(monkeypatch, setting, val
 def test_sigmoid_threshold_scale_is_enforced():
     with pytest.raises(ValueError, match='sigmoid'):
         effective_threshold({'effective_activation': 'Sigmoid'}, 2.0)
-
-

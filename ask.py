@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
 
+from src import retrieve as retrieval_module
 from src.citations import GenerationStatus
 from src.generate import generate_answer
 from src.ingest import ingest_folder, reingest_folder, get_index_config, index_status, active_collection_name, DB_DIR
@@ -129,7 +130,7 @@ def main():
     parser.add_argument("--reingest", action="store_true",
                          help="Reprocess all PDFs, including unchanged files")
     parser.add_argument("--citation-retries", type=int,
-                        default=int(__import__("os").getenv("CITATION_MAX_RETRIES", "1")),
+                        default=os.getenv("CITATION_MAX_RETRIES", "1"),
                         help="Maximum citation repair generations (default: 1)")
     parser.add_argument("--no-citation-validation", action="store_true",
                         help="Disable citation reference validation")
@@ -365,7 +366,7 @@ def index_main(argv=None):
             metadata["manifest_name"] = manifest.name
             with INDEX_LOCK:
                 write_metadata(DB_DIR, metadata)
-            retrieve._bm25_cache = None
+            retrieval_module._bm25_cache = None
             console.print(f"[green]Activated replacement index {staging} ({count} chunks).[/green]")
             return 0
         except Exception:

@@ -384,7 +384,6 @@ def test_candidate_counts_and_final_results_are_configurable(monkeypatch):
     monkeypatch.setenv("RERANKER_MIN_SCORE", "0.2")
     monkeypatch.setenv("MAX_CHUNKS_PER_PAPER", "3")
     monkeypatch.setenv("MMR_LAMBDA", "0.6")
-    monkeypatch.setenv("ADJACENT_CHUNKS", "2")
 
     config = retrieval.RetrievalConfig.from_env()
 
@@ -393,14 +392,12 @@ def test_candidate_counts_and_final_results_are_configurable(monkeypatch):
     assert config.reranker_min_score == 0.2
     assert config.max_chunks_per_paper == 3
     assert config.mmr_lambda == 0.6
-    assert config.adjacent_chunks == 2
 
 
 @pytest.mark.parametrize("name,value", [
     ("RERANKER_MIN_SCORE", "nan"),
     ("MAX_CHUNKS_PER_PAPER", "0"),
     ("MMR_LAMBDA", "1.1"),
-    ("ADJACENT_CHUNKS", "-1"),
 ])
 def test_invalid_relevance_selection_configuration_is_rejected(monkeypatch, name, value):
     monkeypatch.setenv(name, value)
@@ -445,13 +442,13 @@ def test_threshold_removes_weak_reranker_results_and_can_return_empty():
     ]
 
     selected = retrieval._select_context(
-        candidates, candidates, top_k=5, min_score=0.05,
-        max_per_paper=2, diversity=0.75, adjacent_chunks=0,
+        candidates, top_k=5, min_score=0.05,
+        max_per_paper=2, diversity=0.75,
     )
     assert [item["id"] for item in selected] == ["strong"]
     assert retrieval._select_context(
-        candidates[1:], candidates, top_k=5, min_score=0.05,
-        max_per_paper=2, diversity=0.75, adjacent_chunks=0,
+        candidates[1:], top_k=5, min_score=0.05,
+        max_per_paper=2, diversity=0.75,
     ) == []
 
 
@@ -486,8 +483,8 @@ def test_anchor_selection_keeps_neighbors_out_of_ranked_slots():
     anchor = {**corpus[1], "reranker_score": 0.9}
 
     selected = retrieval._select_context(
-        [anchor], corpus, top_k=3, min_score=0.05,
-        max_per_paper=2, diversity=0.75, adjacent_chunks=1,
+        [anchor], top_k=3, min_score=0.05,
+        max_per_paper=2, diversity=0.75,
     )
 
     assert [item["text"] for item in selected] == ["relevant anchor"]
@@ -509,8 +506,8 @@ def test_distinct_anchors_take_priority_over_adjacent_chunks():
     ]
 
     selected = retrieval._select_context(
-        anchors, corpus, top_k=5, min_score=0.01,
-        max_per_paper=2, diversity=1.0, adjacent_chunks=1,
+        anchors, top_k=5, min_score=0.01,
+        max_per_paper=2, diversity=1.0,
     )
 
     assert [item["text"] for item in selected] == ["first answer", "second answer"]

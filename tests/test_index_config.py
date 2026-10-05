@@ -68,7 +68,7 @@ def test_corrupt_metadata_is_reported(tmp_path):
 def test_rebuild_activates_validated_staging_collection_and_preserves_old_on_failure(tmp_path, monkeypatch):
     chromadb = pytest.importorskip("chromadb")
     import ask
-    from src import ingest, sync
+    from src import ingest, retrieve, sync
 
     papers = tmp_path / "papers"
     papers.mkdir()
@@ -83,7 +83,9 @@ def test_rebuild_activates_validated_staging_collection_and_preserves_old_on_fai
                        "document_id": digest, "file_hash": digest}],
         "embeddings": [[0.1] * 384],
     })
+    monkeypatch.setattr(retrieve, "_bm25_cache", ("old index",))
     assert ask.index_main(["rebuild", "--papers", str(papers)]) == 0
+    assert retrieve._bm25_cache is None
     stored = read_metadata(db)
     assert stored["active_collection"].startswith("papers_staging_")
     client = chromadb.PersistentClient(path=str(db))

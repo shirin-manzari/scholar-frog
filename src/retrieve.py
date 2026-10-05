@@ -152,7 +152,6 @@ class RetrievalConfig:
     reranker_min_score: float
     max_chunks_per_paper: int
     mmr_lambda: float
-    adjacent_chunks: int
 
     @classmethod
     def from_env(cls):
@@ -180,7 +179,6 @@ class RetrievalConfig:
             reranker_min_score=_finite_float("RERANKER_MIN_SCORE", 0.01),
             max_chunks_per_paper=_positive_int("MAX_CHUNKS_PER_PAPER", 2),
             mmr_lambda=_bounded_float("MMR_LAMBDA", 0.75, 0.0, 1.0),
-            adjacent_chunks=_non_negative_int("ADJACENT_CHUNKS", 1),
         )
 
 
@@ -715,9 +713,8 @@ def _chunk_position(result: dict) -> tuple[int, int] | None:
     return page, int(match.group("index"))
 
 
-def _select_context(reranked: list[dict], corpus: list[dict], *, top_k: int,
-                    min_score: float, max_per_paper: int, diversity: float,
-                    adjacent_chunks: int) -> list[dict]:
+def _select_context(reranked: list[dict], *, top_k: int,
+                    min_score: float, max_per_paper: int, diversity: float) -> list[dict]:
     """Threshold, diversify, and cap search anchors before context expansion."""
     relevant = [
         candidate for candidate in reranked
@@ -1110,12 +1107,10 @@ def _retrieve_locked(question: str, top_k: int | None = None,
             max_per_paper = config.max_chunks_per_paper
             results = _select_context(
                 reranked,
-                corpus,
                 top_k=top_k,
                 min_score=reranked[0].get("score_contract", {}).get("effective_threshold", config.reranker_min_score) if reranked else config.reranker_min_score,
                 max_per_paper=max_per_paper,
                 diversity=config.mmr_lambda,
-                adjacent_chunks=config.adjacent_chunks,
             )
             overview = _overview_evidence(question, corpus, document_id)
             for item in overview:
